@@ -1,4 +1,4 @@
-# monnett-factory
+# factory (Monnet-social/factory)
 
 Agent assets for Monnett repositories. First product: an AI first-pass reviewer for
 `monnett-core` pull requests on Bitbucket, run as a Claude Code routine.
