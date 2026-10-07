@@ -1,0 +1,19 @@
+# Snippet for monnett-core/bitbucket-pipelines.yml (not applied yet; needs suki's approval).
+# Fires the review routine on every PR create/update. Runs on an Atlassian cloud runner,
+# not the self-hosted one, so it does not compete with the test step.
+# Secured repository variables: ROUTINE_FIRE_URL, ROUTINE_FIRE_TOKEN.
+pipelines:
+  pull-requests:
+    '**':
+      - step:
+          name: AI review trigger
+          image: curlimages/curl:8.10.1
+          size: 1x
+          script:
+            - >
+              curl -sS --fail-with-body -X POST "$ROUTINE_FIRE_URL"
+              -H "Authorization: Bearer $ROUTINE_FIRE_TOKEN"
+              -H "anthropic-beta: experimental-cc-routine-2026-04-01"
+              -H "anthropic-version: 2023-06-01"
+              -H "Content-Type: application/json"
+              -d "{\"text\": \"pr=${BITBUCKET_PR_ID} sha=${BITBUCKET_COMMIT}\"}"
