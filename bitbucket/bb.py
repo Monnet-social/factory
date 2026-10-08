@@ -10,7 +10,8 @@ Env:
 
 Commands:
   bb.py prepare --pr 123 --sha abcdef0 --workdir work   → prints READY <ws> | SKIP <reason>
-  bb.py post --pr 123 --sha abcdef0 --review work/review.json [--dry-run]
+  bb.py post --pr 123 --sha abcdef0 --review work/review.json [--dry-run]   (posts only if REVIEW_MODE=live)
+  bb.py feedback [--since 2026-10-08]   → developer replies (useful / wrong / noise) to AI comments, as JSON
 """
 import argparse
 import base64
@@ -20,6 +21,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,7 +29,9 @@ FACTORY = os.path.dirname(HERE)
 WS_NAME = os.environ.get("BB_WORKSPACE", "monnett-social")
 REPO = os.environ.get("BB_REPO", "monnett-core")
 API = f"https://api.bitbucket.org/2.0/repositories/{WS_NAME}/{REPO}"
-MARKER = "<!-- monnett-ai-review sha={sha} -->"
+MARKER = "[//]: # (monnett-ai-review sha={sha})"
+FINDING_MARKER = "[//]: # (monnett-ai-finding)"
+FEEDBACK = ("useful", "wrong", "noise")
 SEV_LABEL = {"blocking": "Blocking", "should": "Should fix", "nit": "Nit", "question": "Question"}
 
 
@@ -123,10 +127,14 @@ def prepare(a):
     print(f"READY {ws}")
 
 
+def head_line(f):
+    return f"**AI · {SEV_LABEL.get(f['severity'], f['severity'])}: {f['title']}**"
+
+
 def render(f):
-    head = f"**{SEV_LABEL.get(f['severity'], f['severity'])}: {f['title']}**"
     fix = f"\n\n**Fix:** {f['fix']}" if f.get("fix") else ""
-    return f"{head}\n\n{f['body']}{fix}"
+    return (f"{head_line(f)}\n\n{f['body']}{fix}\n\n"
+            f"_Reply `useful`, `wrong` or `noise` — it scores the AI reviewer pilot._\n\n{FINDING_MARKER}")
 
 
 def post(a):
@@ -134,14 +142,23 @@ def post(a):
     findings = rv.get("findings", [])
     inline = [f for f in findings if f["severity"] in ("blocking", "should", "question") and f.get("path") and f.get("line")]
     rest = [f for f in findings if f not in inline]
+    if not (a.dry_run or os.environ.get("REVIEW_MODE") != "live"):  # re-review: skip findings already posted
+        posted = [c.get("content", {}).get("raw") or "" for c in paged(f"/pullrequests/{a.pr}/comments?pagelen=100")]
+        repeated = [f for f in inline if any(head_line(f) in raw for raw in posted)]
+        inline = [f for f in inline if f not in repeated]
+    else:
+        repeated = []
     counts = {s: sum(1 for f in findings if f["severity"] == s) for s in SEV_LABEL}
     lines = [f"**AI review** (`{a.sha[:12]}`) — " + ", ".join(f"{n} {SEV_LABEL[s].lower()}" for s, n in counts.items() if n)
              if findings else f"**AI review** (`{a.sha[:12]}`) — no findings.", "", rv.get("summary", "")]
     if rest:
         lines += ["", *[f"- **{SEV_LABEL.get(f['severity'])}** `{f.get('path') or ''}{':' + str(f['line']) if f.get('line') else ''}` "
                         f"{f['title']}: {f['body']}" for f in rest]]
-    lines += ["", "_First-pass AI review against CLAUDE.md and the team rubric. Reply to dispute a finding._",
-              MARKER.format(sha=a.sha[:12])]
+    if repeated:
+        lines += ["", f"{len(repeated)} finding(s) from an earlier commit still apply and were not re-posted."]
+    lines += ["", "_First-pass AI review against CLAUDE.md and the team rubric (pilot). Reply `useful`, `wrong` "
+                  "or `noise` to any AI comment._",
+              "", MARKER.format(sha=a.sha[:12])]
     summary = "\n".join(lines)
     if a.dry_run or os.environ.get("REVIEW_MODE") != "live":  # shadow unless explicitly live
         print(json.dumps({"summary": summary, "inline": [{"path": f["path"], "line": f["line"], "text": render(f)} for f in inline]},
@@ -153,10 +170,28 @@ def post(a):
                 {"content": {"raw": render(f)}, "inline": {"path": f["path"], "to": int(f["line"])}})
         except urllib.error.HTTPError as e:  # line outside the diff → fold into the summary
             summary = summary.replace(MARKER.format(sha=a.sha[:12]),
-                                      f"- `{f['path']}:{f['line']}` {render(f)}\n\n" + MARKER.format(sha=a.sha[:12]))
+                                      f"- `{f['path']}:{f['line']}` {render(f).replace(FINDING_MARKER, '').strip()}\n\n" + MARKER.format(sha=a.sha[:12]))
             print(f"inline failed ({e.code}) for {f['path']}:{f['line']}, folded into summary", file=sys.stderr)
     api("POST", f"/pullrequests/{a.pr}/comments", {"content": {"raw": summary}})
     print(f"POSTED {len(inline)} inline + summary")
+
+
+def feedback(a):
+    out = []
+    q = f'updated_on>={a.since}T00:00:00+00:00'
+    for p in paged("/pullrequests?state=OPEN&state=MERGED&state=DECLINED&pagelen=50&q=" + urllib.parse.quote(q)):
+        comments = list(paged(f"/pullrequests/{p['id']}/comments?pagelen=100"))
+        ai = {c["id"]: c for c in comments if FINDING_MARKER in (c.get("content", {}).get("raw") or "")
+              or "monnett-ai-review" in (c.get("content", {}).get("raw") or "")}
+        for cid, c in ai.items():
+            raw = c["content"]["raw"]
+            replies = [r for r in comments if (r.get("parent") or {}).get("id") == cid and not r.get("deleted")]
+            votes = [w for r in replies for w in FEEDBACK if re.search(rf"\b{w}\b", (r["content"]["raw"] or "").lower())]
+            out.append({"pr": p["id"], "comment": cid, "kind": "finding" if FINDING_MARKER in raw else "summary",
+                        "title": raw.splitlines()[0][:120], "path": (c.get("inline") or {}).get("path"),
+                        "votes": votes, "replies": len(replies),
+                        "resolved": bool(c.get("resolution"))})
+    print(json.dumps(out, indent=1, ensure_ascii=False))
 
 
 def main():
@@ -171,8 +206,10 @@ def main():
     p2.add_argument("--sha", required=True)
     p2.add_argument("--review", required=True)
     p2.add_argument("--dry-run", action="store_true")
+    p3 = sub.add_parser("feedback")
+    p3.add_argument("--since", default="2026-10-08")
     a = ap.parse_args()
-    prepare(a) if a.cmd == "prepare" else post(a)
+    {"prepare": prepare, "post": post, "feedback": feedback}[a.cmd](a)
 
 
 if __name__ == "__main__":
