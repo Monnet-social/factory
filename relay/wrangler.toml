@@ -1,0 +1,16 @@
+name = "monnett-review-relay"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+REPO = "monnett-social/monnett-core"
+
+# npx wrangler kv namespace create SEEN  → paste the id here
+# [[kv_namespaces]]
+# binding = "SEEN"
+# id = "<id>"
+
+# secrets (not in this file):
+#   npx wrangler secret put BB_WEBHOOK_SECRET
+#   npx wrangler secret put ROUTINE_FIRE_URL
+#   npx wrangler secret put ROUTINE_FIRE_TOKEN

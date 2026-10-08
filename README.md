@@ -12,6 +12,7 @@ Design and decisions: `monnett-team/wiki/ai-code-review.md`, ADR 0003.
 | `jira/jira_issue.py` | Jira issue → Markdown (description, AC) |
 | `routine/PROMPT.md` | Routine prompt (API trigger, shadow/live mode via `REVIEW_MODE`) |
 | `routine/pull-requests-step.yml` | Bitbucket pipeline step that fires the routine |
+| `relay/` | Cloudflare Worker: Bitbucket webhook (signed) → routine `/fire`, once per PR head SHA; preferred trigger, no pipeline change |
 | `backtest/` | Replay the reviewer on historical PRs at their first-review commit and score it against human comments |
 
 ## Workspace contract
