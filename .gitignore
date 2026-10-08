@@ -2,3 +2,4 @@ runs/
 *.json.tmp
 __pycache__/
 .env
+work/
