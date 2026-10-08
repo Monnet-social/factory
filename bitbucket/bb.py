@@ -142,7 +142,7 @@ def post(a):
     lines += ["", "_First-pass AI review against CLAUDE.md and the team rubric. Reply to dispute a finding._",
               MARKER.format(sha=a.sha[:12])]
     summary = "\n".join(lines)
-    if a.dry_run:
+    if a.dry_run or os.environ.get("REVIEW_MODE") != "live":  # shadow unless explicitly live
         print(json.dumps({"summary": summary, "inline": [{"path": f["path"], "line": f["line"], "text": render(f)} for f in inline]},
                          indent=1, ensure_ascii=False))
         return
