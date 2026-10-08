@@ -5,10 +5,10 @@ compatibility_date = "2026-10-01"
 [vars]
 REPO = "monnett-social/monnett-core"
 
-# npx wrangler kv namespace create SEEN  → paste the id here
-# [[kv_namespaces]]
-# binding = "SEEN"
-# id = "<id>"
+# created with: npx wrangler kv namespace create SEEN
+[[kv_namespaces]]
+binding = "SEEN"
+id = "95009b3b7eb249f5a93d437166f1ce46"
 
 # secrets (not in this file):
 #   npx wrangler secret put BB_WEBHOOK_SECRET
