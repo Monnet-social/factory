@@ -149,7 +149,7 @@ def post(a):
     else:
         repeated = []
     counts = {s: sum(1 for f in findings if f["severity"] == s) for s in SEV_LABEL}
-    lines = [f"**AI review** (`{a.sha[:12]}`) — " + ", ".join(f"{n} {SEV_LABEL[s].lower()}" for s, n in counts.items() if n)
+    lines = [f"**AI review** (`{a.sha[:12]}`) — " + ", ".join(f"{n} {SEV_LABEL[s].lower()}{'s' if n > 1 and s in ('nit', 'question') else ''}" for s, n in counts.items() if n)
              if findings else f"**AI review** (`{a.sha[:12]}`) — no findings.", "", rv.get("summary", "")]
     if rest:
         lines += ["", *[f"- **{SEV_LABEL.get(f['severity'])}** `{f.get('path') or ''}{':' + str(f['line']) if f.get('line') else ''}` "
