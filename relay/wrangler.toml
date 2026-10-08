@@ -2,6 +2,9 @@ name = "monnett-review-relay"
 main = "worker.js"
 compatibility_date = "2026-10-01"
 
+[observability]
+enabled = true
+
 [vars]
 REPO = "monnett-social/monnett-core"
 
