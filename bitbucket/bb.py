@@ -97,7 +97,8 @@ def prepare(a):
     user = os.environ.get("BB_GIT_USER", "x-token-auth")
     url = f"https://{user}:{os.environ['BB_TOKEN']}@bitbucket.org/{WS_NAME}/{REPO}.git"
     if not os.path.exists(core):
-        sh("git", "clone", "--quiet", "--filter=blob:none", url, core)
+        # full clone (~13 MB): blobs must be local, the token is dropped from the remote below
+        sh("git", "clone", "--quiet", url, core)
     dest = pr["destination"]["branch"]["name"]
     src = pr["source"]["branch"]["name"]
     sh("git", "fetch", "--quiet", "origin", dest, src, cwd=core)
