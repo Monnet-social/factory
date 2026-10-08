@@ -17,7 +17,8 @@ Design and decisions: `monnett-team/wiki/ai-code-review.md`, ADR 0003.
 
 ## Workspace contract
 `bb.py prepare` (live) and `backtest/prepare.py` (replay) produce the same layout, which the skill reads:
-`pr/{meta.json, diff.patch, files.txt, precheck.json, jira.md}` + `core/` (repo at PR head).
+`pr/{meta.json, diff.patch, files.txt, precheck.json, jira.md, prior-review.json}` + `core/` (repo at PR head).
+`prior-review.json` (earlier AI findings with developer replies) exists only in live runs.
 
 ## Routine setup (pilot)
 1. Push this repo to GitHub; create the routine at claude.ai/code/routines with this repo, prompt

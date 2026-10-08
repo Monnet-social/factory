@@ -63,6 +63,37 @@ def sh(*cmd, cwd=None):
     return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def thread_replies(comments, root_id):
+    """All non-deleted replies under a comment, nested ones included, in posting order."""
+    ids, out = {root_id}, []
+    for c in sorted(comments, key=lambda c: c["id"]):
+        if (c.get("parent") or {}).get("id") in ids and not c.get("deleted"):
+            ids.add(c["id"])
+            out.append(c)
+    return out
+
+
+def votes_of(replies):
+    return [w for r in replies for w in FEEDBACK if re.search(rf"\b{w}\b", (r["content"]["raw"] or "").lower())]
+
+
+def ai_threads(comments):
+    """Earlier AI inline findings on the PR with the developers' replies, keyed by comment id."""
+    out = {}
+    for c in comments:
+        raw = (c.get("content") or {}).get("raw") or ""
+        if FINDING_MARKER not in raw or c.get("deleted") or c.get("parent"):
+            continue
+        replies = thread_replies(comments, c["id"])
+        inline = c.get("inline") or {}
+        out[c["id"]] = {"id": c["id"], "path": inline.get("path"), "line": inline.get("to") or inline.get("from"),
+                        "outdated": bool(inline.get("outdated")), "created_on": c.get("created_on"),
+                        "text": raw.replace(FINDING_MARKER, "").strip(), "resolved": bool(c.get("resolution")),
+                        "votes": votes_of(replies),
+                        "replies": [{"author": r["user"]["display_name"], "text": r["content"]["raw"]} for r in replies]}
+    return out
+
+
 def already_reviewed(pr, sha):
     mark = MARKER.format(sha=sha[:12])
     return any(mark in (c.get("content", {}).get("raw") or "") for c in paged(f"/pullrequests/{pr}/comments?pagelen=100"))
@@ -119,6 +150,8 @@ def prepare(a):
     open(p("diff.patch"), "w").write(sh("git", "diff", "-M", base, full_head, cwd=core))
     open(p("files.txt"), "w").write(sh("git", "diff", "-M", "--name-status", base, full_head, cwd=core))
     json.dump(open_pr_migrations(pr["id"]), open(p("open-migrations.json"), "w"))
+    prior = ai_threads(list(paged(f"/pullrequests/{a.pr}/comments?pagelen=100")))
+    json.dump(list(prior.values()), open(p("prior-review.json"), "w"), indent=1, ensure_ascii=False)
     sh(sys.executable, os.path.join(FACTORY, "checks", "precheck.py"), "--repo", core, "--base", base,
        "--head", full_head, "--develop", f"origin/{dest}", "--open-migrations", p("open-migrations.json"),
        "--out", p("precheck.json"))
@@ -140,28 +173,39 @@ def render(f):
 def post(a):
     rv = json.load(open(a.review))
     findings = rv.get("findings", [])
-    inline = [f for f in findings if f["severity"] in ("blocking", "should", "question") and f.get("path") and f.get("line")]
-    rest = [f for f in findings if f not in inline]
-    if not (a.dry_run or os.environ.get("REVIEW_MODE") != "live"):  # re-review: skip findings already posted
-        posted = [c.get("content", {}).get("raw") or "" for c in paged(f"/pullrequests/{a.pr}/comments?pagelen=100")]
-        repeated = [f for f in inline if any(head_line(f) in raw for raw in posted)]
-        inline = [f for f in inline if f not in repeated]
-    else:
-        repeated = []
-    counts = {s: sum(1 for f in findings if f["severity"] == s) for s in SEV_LABEL}
+    threads = ai_threads(list(paged(f"/pullrequests/{a.pr}/comments?pagelen=100")))
+
+    def prior_of(f):  # the reviewer links repeats via prior_id; the exact title is only a fallback
+        try:
+            pid = int(f.get("prior_id"))
+        except (TypeError, ValueError):
+            pid = None
+        return threads.get(pid) or next((t for t in threads.values() if head_line(f) in t["text"]), None)
+
+    answered, carried, new = [], [], []
+    for f in findings:
+        t = prior_of(f)
+        # a thread the developer answered or resolved is theirs to close; the bot never repeats it
+        (new if t is None else answered if t["replies"] or t["resolved"] else carried).append(f)
+    inline = [f for f in new if f["severity"] in ("blocking", "should", "question") and f.get("path") and f.get("line")]
+    rest = [f for f in new if f not in inline]
+    counts = {s: sum(1 for f in new if f["severity"] == s) for s in SEV_LABEL}
     lines = [f"**AI review** (`{a.sha[:12]}`) — " + ", ".join(f"{n} {SEV_LABEL[s].lower()}{'s' if n > 1 and s in ('nit', 'question') else ''}" for s, n in counts.items() if n)
-             if findings else f"**AI review** (`{a.sha[:12]}`) — no findings.", "", rv.get("summary", "")]
+             if new else f"**AI review** (`{a.sha[:12]}`) — no new findings.", "", rv.get("summary", "")]
     if rest:
         lines += ["", *[f"- **{SEV_LABEL.get(f['severity'])}** `{f.get('path') or ''}{':' + str(f['line']) if f.get('line') else ''}` "
                         f"{f['title']}: {f['body']}" for f in rest]]
-    if repeated:
-        lines += ["", f"{len(repeated)} finding(s) from an earlier commit still apply and were not re-posted."]
+    if carried:
+        lines += ["", f"{len(carried)} unanswered finding(s) from an earlier commit still apply and were not re-posted."]
+    if answered:
+        lines += ["", f"{len(answered)} finding(s) already answered in their threads were not repeated."]
     lines += ["", "_First-pass AI review against CLAUDE.md and the team rubric (pilot). Reply `useful`, `wrong` "
                   "or `noise` to any AI comment._",
               "", MARKER.format(sha=a.sha[:12])]
     summary = "\n".join(lines)
     if a.dry_run or os.environ.get("REVIEW_MODE") != "live":  # shadow unless explicitly live
-        print(json.dumps({"summary": summary, "inline": [{"path": f["path"], "line": f["line"], "text": render(f)} for f in inline]},
+        print(json.dumps({"summary": summary, "inline": [{"path": f["path"], "line": f["line"], "text": render(f)} for f in inline],
+                          "carried": [f["title"] for f in carried], "answered": [f["title"] for f in answered]},
                          indent=1, ensure_ascii=False))
         return
     for f in inline:
@@ -185,8 +229,8 @@ def feedback(a):
               or "monnett-ai-review" in (c.get("content", {}).get("raw") or "")}
         for cid, c in ai.items():
             raw = c["content"]["raw"]
-            replies = [r for r in comments if (r.get("parent") or {}).get("id") == cid and not r.get("deleted")]
-            votes = [w for r in replies for w in FEEDBACK if re.search(rf"\b{w}\b", (r["content"]["raw"] or "").lower())]
+            replies = thread_replies(comments, cid)
+            votes = votes_of(replies)
             out.append({"pr": p["id"], "comment": cid, "kind": "finding" if FINDING_MARKER in raw else "summary",
                         "title": raw.splitlines()[0][:120], "path": (c.get("inline") or {}).get("path"),
                         "votes": votes, "replies": len(replies),
