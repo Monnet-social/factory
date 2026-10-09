@@ -22,6 +22,9 @@ Write one JSON object to the output file (default `review.json` in the workspace
       "prior_id": null
     }
   ],
+  "fixed_prior": [
+    {"prior_id": 879004468, "evidence": "Tests for the legacy no-issuer token and both wrong-issuer cases added in `JwtServiceAdminSigningModeTest.java:590-640`."}
+  ],
   "dropped_prechecks": [
     {"check": "bruno-sync", "path": "…", "reason": "endpoint is a webhook, not called by clients"}
   ],
@@ -37,6 +40,7 @@ Write one JSON object to the output file (default `review.json` in the workspace
 | `line` | line number in the PR head version of the file; `null` for file-level findings |
 | `confidence` | `high` or `medium` |
 | `source` | `llm` or `precheck:<check-id>` (kept pre-check findings, wording may be improved) |
-| `prior_id` | `id` of the earlier finding in `pr/prior-review.json` that raised the same problem, else `null`. Findings with a `prior_id` are never posted again |
+| `fixed_prior` | earlier `kind: finding` items from `pr/prior-review.json` that the PR head fixes completely, each with one line of evidence; their threads are resolved. Empty on a first review |
+| `prior_id` | `id` of the earlier finding or summary in `pr/prior-review.json` that raised the same problem, else `null`. Findings with a `prior_id` are never posted again |
 
 `body` ≤ 6 lines, Markdown allowed, no headings. Findings ordered by severity, then file.

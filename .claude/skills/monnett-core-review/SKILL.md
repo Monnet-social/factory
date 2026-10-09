@@ -21,7 +21,7 @@ file is missing, continue without it and say so in `summary`.
 | `pr/diff.patch` | `git diff base..head` of the PR |
 | `pr/files.txt` | changed files with status |
 | `pr/precheck.json` | deterministic findings from `checks/precheck.py` |
-| `pr/prior-review.json` | your earlier inline findings on this PR (`id`, `path`, `line`, `text`) with the developers' `replies`, `votes` and `resolved` (empty list on the first review) |
+| `pr/prior-review.json` | your earlier comments on this PR: inline findings (`kind: finding`) and summaries (`kind: summary`, they hold the nits and file-level items), each with `id`, `path`, `line`, `text` and the developers' `replies`, `votes`, `resolved` (empty list on the first review) |
 | `core/` | the repository tree at the PR head (no git history) |
 
 ## Procedure
@@ -46,8 +46,8 @@ file is missing, continue without it and say so in `summary`.
    usually right); drop the ones that are false positives in this context. Do not repeat a pre-check
    finding as a separate LLM finding.
 8. **Prior review.** Read `pr/prior-review.json`. For every candidate finding, check whether an earlier
-   finding raised the same problem, even with other wording or at another line. If so, set
-   `prior_id` to that earlier `id` and apply these rules:
+   finding or summary item raised the same problem, even with other wording or at another line. If so, set
+   `prior_id` to that earlier `id` (the summary's `id` for a nit or file-level item) and apply these rules:
    - The thread has a reply or is resolved → the developer answered it. Keep the finding only with
      `prior_id` set (the poster then does not repeat it). Do not raise the same point again under a
      new title, do not argue with the reply, and leave it out of `summary`. If you think the reply is
@@ -57,6 +57,11 @@ file is missing, continue without it and say so in `summary`.
      without `prior_id`.
    - No reply and not fixed → keep it with `prior_id`; it is counted, not re-posted.
    A finding is new (no `prior_id`) only if no earlier finding covers the same problem.
+   Then go through every earlier `kind: finding` that is not `resolved`: if the PR head now fixes the
+   **whole** problem (verified in `core/`, not taken from a reply), do not keep it as a finding; add
+   `{"prior_id": <id>, "evidence": "<one line: what changed, with path:line>"}` to `fixed_prior`. The
+   poster replies with the evidence and resolves the thread. Partly fixed is not fixed. Do not restate
+   earlier findings in `summary`; the poster adds the counts.
 9. **Verify.** For every candidate finding, try to prove yourself wrong: read the code path again,
    look for a guard elsewhere, a test that covers it, a caller that cannot produce the input. Keep it
    only if it survives. Mark `confidence: "high"` when you traced the path end to end, `"medium"` when

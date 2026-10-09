@@ -8,7 +8,7 @@ Design and decisions: `monnett-team/wiki/ai-code-review.md`, ADR 0003.
 |---|---|
 | `.claude/skills/monnett-core-review/` | Review skill: procedure, rubric (from 400 human review comments), known CLAUDE.md drift, output schema |
 | `checks/precheck.py` | Deterministic diff-scoped checks: Flyway collisions/idempotency, endpoint security/OpenAPI, Bruno, `.env.example`, AppConfigTest, internal mocks, test `@Transactional`, layering imports, nested types, listener catch, comment length |
-| `bitbucket/bb.py` | Routine side: `prepare` (validate payload, clone, diff, pre-checks, Jira → workspace), `post` (inline + summary comments, idempotent per SHA) |
+| `bitbucket/bb.py` | Routine side: `prepare` (validate payload, clone, diff, pre-checks, Jira → workspace), `post` (inline + summary comments, idempotent per SHA; replies to and resolves earlier findings the reviewer verified as fixed), `feedback` (votes, replies and fixes per AI comment, with totals) |
 | `jira/jira_issue.py` | Jira issue → Markdown (description, AC) |
 | `routine/PROMPT.md` | Routine prompt (API trigger, shadow/live mode via `REVIEW_MODE`) |
 | `routine/pull-requests-step.yml` | Bitbucket pipeline step that fires the routine |

@@ -11,7 +11,7 @@ Env:
 Commands:
   bb.py prepare --pr 123 --sha abcdef0 --workdir work   → prints READY <ws> | SKIP <reason>
   bb.py post --pr 123 --sha abcdef0 --review work/review.json [--dry-run]   (posts only if REVIEW_MODE=live)
-  bb.py feedback [--since 2026-10-08]   → developer replies (useful / wrong / noise) to AI comments, as JSON
+  bb.py feedback [--since 2026-10-08]   → developer replies (useful / wrong / noise) and fixes of AI findings, as JSON
 """
 import argparse
 import base64
@@ -31,6 +31,8 @@ REPO = os.environ.get("BB_REPO", "monnett-core")
 API = f"https://api.bitbucket.org/2.0/repositories/{WS_NAME}/{REPO}"
 MARKER = "[//]: # (monnett-ai-review sha={sha})"
 FINDING_MARKER = "[//]: # (monnett-ai-finding)"
+FIXED_MARKER = "[//]: # (monnett-ai-fixed sha={sha})"
+FIXED_RE = re.compile(r"\(monnett-ai-fixed sha=([0-9a-f]+)\)")
 FEEDBACK = ("useful", "wrong", "noise")
 SEV_LABEL = {"blocking": "Blocking", "should": "Should fix", "nit": "Nit", "question": "Question"}
 
@@ -63,14 +65,21 @@ def sh(*cmd, cwd=None):
     return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def thread_replies(comments, root_id):
-    """All non-deleted replies under a comment, nested ones included, in posting order."""
+def thread_replies(comments, root_id, bot=False):
+    """Non-deleted replies under a comment, nested ones included, in posting order: the developers' (default) or the bot's own."""
     ids, out = {root_id}, []
     for c in sorted(comments, key=lambda c: c["id"]):
         if (c.get("parent") or {}).get("id") in ids and not c.get("deleted"):
             ids.add(c["id"])
-            out.append(c)
+            if bool(FIXED_RE.search(c["content"]["raw"] or "")) == bot:
+                out.append(c)
     return out
+
+
+def fixed_in(comments, root_id):
+    """SHA at which the bot found the finding fixed and resolved its thread, else None."""
+    m = next((FIXED_RE.search(r["content"]["raw"]) for r in thread_replies(comments, root_id, bot=True)), None)
+    return m.group(1) if m else None
 
 
 def votes_of(replies):
@@ -78,17 +87,20 @@ def votes_of(replies):
 
 
 def ai_threads(comments):
-    """Earlier AI inline findings on the PR with the developers' replies, keyed by comment id."""
+    """Earlier AI comments on the PR with the developers' replies, keyed by comment id: inline findings, and
+    summaries (they hold the nits and file-level items, so a re-review must not repeat those either)."""
     out = {}
     for c in comments:
         raw = (c.get("content") or {}).get("raw") or ""
-        if FINDING_MARKER not in raw or c.get("deleted") or c.get("parent"):
+        kind = "finding" if FINDING_MARKER in raw else "summary" if "(monnett-ai-review sha=" in raw else None
+        if not kind or c.get("deleted") or c.get("parent"):
             continue
         replies = thread_replies(comments, c["id"])
         inline = c.get("inline") or {}
-        out[c["id"]] = {"id": c["id"], "path": inline.get("path"), "line": inline.get("to") or inline.get("from"),
+        out[c["id"]] = {"id": c["id"], "kind": kind, "path": inline.get("path"), "line": inline.get("to") or inline.get("from"),
                         "outdated": bool(inline.get("outdated")), "created_on": c.get("created_on"),
-                        "text": raw.replace(FINDING_MARKER, "").strip(), "resolved": bool(c.get("resolution")),
+                        "text": re.sub(r"\[//\]: # \(monnett-ai-[^)]*\)", "", raw).strip(), "resolved": bool(c.get("resolution")),
+                        "fixed_in": fixed_in(comments, c["id"]),
                         "votes": votes_of(replies),
                         "replies": [{"author": r["user"]["display_name"], "text": r["content"]["raw"]} for r in replies]}
     return out
@@ -182,9 +194,20 @@ def post(a):
             pid = None
         return threads.get(pid) or next((t for t in threads.values() if head_line(f) in t["text"]), None)
 
+    fixed = []  # earlier findings the reviewer verified as fixed at this head → reply + resolve the thread
+    for x in rv.get("fixed_prior", []):
+        try:
+            t = threads.get(int(x.get("prior_id")))
+        except (TypeError, ValueError):
+            t = None
+        if t and t["kind"] == "finding" and not t["resolved"] and not t["fixed_in"] and x.get("evidence"):
+            fixed.append((t, str(x["evidence"]).strip()))
+    fixed_ids = {t["id"] for t, _ in fixed}
     answered, carried, new = [], [], []
     for f in findings:
         t = prior_of(f)
+        if t and t["id"] in fixed_ids:
+            continue
         # a thread the developer answered or resolved is theirs to close; the bot never repeats it
         (new if t is None else answered if t["replies"] or t["resolved"] else carried).append(f)
     inline = [f for f in new if f["severity"] in ("blocking", "should", "question") and f.get("path") and f.get("line")]
@@ -199,13 +222,16 @@ def post(a):
         lines += ["", f"{len(carried)} unanswered finding(s) from an earlier commit still apply and were not re-posted."]
     if answered:
         lines += ["", f"{len(answered)} finding(s) already answered in their threads were not repeated."]
+    if fixed:
+        lines += ["", f"{len(fixed)} earlier finding(s) fixed in this commit; their threads were resolved."]
     lines += ["", "_First-pass AI review against CLAUDE.md and the team rubric (pilot). Reply `useful`, `wrong` "
                   "or `noise` to any AI comment._",
               "", MARKER.format(sha=a.sha[:12])]
     summary = "\n".join(lines)
     if a.dry_run or os.environ.get("REVIEW_MODE") != "live":  # shadow unless explicitly live
         print(json.dumps({"summary": summary, "inline": [{"path": f["path"], "line": f["line"], "text": render(f)} for f in inline],
-                          "carried": [f["title"] for f in carried], "answered": [f["title"] for f in answered]},
+                          "carried": [f["title"] for f in carried], "answered": [f["title"] for f in answered],
+                          "fixed": [{"comment": t["id"], "reply": fixed_reply(a.sha, ev)} for t, ev in fixed]},
                          indent=1, ensure_ascii=False))
         return
     for f in inline:
@@ -216,11 +242,24 @@ def post(a):
             summary = summary.replace(MARKER.format(sha=a.sha[:12]),
                                       f"- `{f['path']}:{f['line']}` {render(f).replace(FINDING_MARKER, '').strip()}\n\n" + MARKER.format(sha=a.sha[:12]))
             print(f"inline failed ({e.code}) for {f['path']}:{f['line']}, folded into summary", file=sys.stderr)
+    resolved = 0
+    for t, ev in fixed:
+        try:
+            api("POST", f"/pullrequests/{a.pr}/comments", {"content": {"raw": fixed_reply(a.sha, ev)}, "parent": {"id": t["id"]}})
+            api("POST", f"/pullrequests/{a.pr}/comments/{t['id']}/resolve")
+            resolved += 1
+        except urllib.error.HTTPError as e:
+            print(f"resolve failed ({e.code}) for comment {t['id']}", file=sys.stderr)
     api("POST", f"/pullrequests/{a.pr}/comments", {"content": {"raw": summary}})
-    print(f"POSTED {len(inline)} inline + summary")
+    print(f"POSTED {len(inline)} inline + summary, resolved {resolved} fixed thread(s)")
+
+
+def fixed_reply(sha, evidence):
+    return f"**AI · Fixed in `{sha[:12]}`:** {evidence}\n\n{FIXED_MARKER.format(sha=sha[:12])}"
 
 
 def feedback(a):
+    """Per AI comment: the developers' votes and replies, and whether a later commit fixed it (bot-resolved)."""
     out = []
     q = f'updated_on>={a.since}T00:00:00+00:00'
     for p in paged("/pullrequests?state=OPEN&state=MERGED&state=DECLINED&pagelen=50&q=" + urllib.parse.quote(q)):
@@ -234,8 +273,13 @@ def feedback(a):
             out.append({"pr": p["id"], "comment": cid, "kind": "finding" if FINDING_MARKER in raw else "summary",
                         "title": raw.splitlines()[0][:120], "path": (c.get("inline") or {}).get("path"),
                         "votes": votes, "replies": len(replies),
-                        "resolved": bool(c.get("resolution"))})
-    print(json.dumps(out, indent=1, ensure_ascii=False))
+                        "resolved": bool(c.get("resolution")), "fixed_in": fixed_in(comments, cid)})
+    fs = [x for x in out if x["kind"] == "finding"]
+    totals = {"findings": len(fs), "answered": sum(1 for x in fs if x["replies"]),
+              **{w: sum(1 for x in fs if w in x["votes"]) for w in FEEDBACK},
+              "fixed": sum(1 for x in fs if x["fixed_in"]),
+              "useful_or_fixed": sum(1 for x in fs if x["fixed_in"] or "useful" in x["votes"])}
+    print(json.dumps({"totals": totals, "comments": out}, indent=1, ensure_ascii=False))
 
 
 def main():
