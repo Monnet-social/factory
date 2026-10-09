@@ -62,6 +62,11 @@ def paged(url):
         url = page.get("next")
 
 
+def comments_of(pr):
+    # the list endpoint leaves `resolution` empty unless it is requested explicitly
+    return list(paged(f"/pullrequests/{pr}/comments?pagelen=100&fields=%2Bvalues.resolution.*"))
+
+
 def sh(*cmd, cwd=None):
     return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
@@ -109,7 +114,7 @@ def ai_threads(comments):
 
 def already_reviewed(pr, sha):
     mark = MARKER.format(sha=sha[:12])
-    return any(mark in (c.get("content", {}).get("raw") or "") for c in paged(f"/pullrequests/{pr}/comments?pagelen=100"))
+    return any(mark in (c.get("content", {}).get("raw") or "") for c in comments_of(pr))
 
 
 def open_pr_migrations(exclude):
@@ -163,7 +168,7 @@ def prepare(a):
     open(p("diff.patch"), "w").write(sh("git", "diff", "-M", base, full_head, cwd=core))
     open(p("files.txt"), "w").write(sh("git", "diff", "-M", "--name-status", base, full_head, cwd=core))
     json.dump(open_pr_migrations(pr["id"]), open(p("open-migrations.json"), "w"))
-    prior = ai_threads(list(paged(f"/pullrequests/{a.pr}/comments?pagelen=100")))
+    prior = ai_threads(comments_of(a.pr))
     json.dump(list(prior.values()), open(p("prior-review.json"), "w"), indent=1, ensure_ascii=False)
     sh(sys.executable, os.path.join(FACTORY, "checks", "precheck.py"), "--repo", core, "--base", base,
        "--head", full_head, "--develop", f"origin/{dest}", "--open-migrations", p("open-migrations.json"),
@@ -186,7 +191,7 @@ def render(f):
 def post(a):
     rv = json.load(open(a.review))
     findings = rv.get("findings", [])
-    threads = ai_threads(list(paged(f"/pullrequests/{a.pr}/comments?pagelen=100")))
+    threads = ai_threads(comments_of(a.pr))
 
     def prior_of(f):  # the reviewer links repeats via prior_id; the exact title is only a fallback
         try:
@@ -264,7 +269,7 @@ def feedback(a):
     out = []
     q = f'updated_on>={a.since}T00:00:00+00:00'
     for p in paged("/pullrequests?state=OPEN&state=MERGED&state=DECLINED&pagelen=50&q=" + urllib.parse.quote(q)):
-        comments = list(paged(f"/pullrequests/{p['id']}/comments?pagelen=100"))
+        comments = comments_of(p['id'])
         ai = {c["id"]: c for c in comments if FINDING_MARKER in (c.get("content", {}).get("raw") or "")
               or "monnett-ai-review" in (c.get("content", {}).get("raw") or "")}
         for cid, c in ai.items():
@@ -278,7 +283,7 @@ def feedback(a):
     fs = [x for x in out if x["kind"] == "finding"]
     totals = {"findings": len(fs), "answered": sum(1 for x in fs if x["replies"]),
               **{w: sum(1 for x in fs if w in x["votes"]) for w in FEEDBACK},
-              "fixed": sum(1 for x in fs if x["fixed_in"]),
+              "resolved": sum(1 for x in fs if x["resolved"]), "fixed": sum(1 for x in fs if x["fixed_in"]),
               "useful_or_fixed": sum(1 for x in fs if x["fixed_in"] or "useful" in x["votes"])}
     print(json.dumps({"totals": totals, "comments": out}, indent=1, ensure_ascii=False))
 
