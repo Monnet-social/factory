@@ -47,9 +47,10 @@ def auth_header():
 def api(method, url, body=None):
     url = url if url.startswith("http") else API + url
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Authorization": auth_header(), "Accept": "application/json",
-                                          "Content-Type": "application/json"})
+    headers = {"Authorization": auth_header(), "Accept": "application/json"}
+    if data is not None:  # an empty body with a JSON content type gets 400 (e.g. /resolve)
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.load(r) if r.length != 0 else {}
 
