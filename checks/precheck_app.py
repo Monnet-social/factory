@@ -676,9 +676,9 @@ def check_dart_lines(repo, files, head, cache, f):
                 if lit is not None and not silenced:
                     f.add("hardcoded-ui-string", "should", d.path, ln,
                           f"User-visible literal `'{lit[:50]}'`; use `context.l10n` with keys in en/de/fr.")
-            # 20. TODO without ticket
+            # 20. TODO without ticket: context only, the backtest judged it noise (no rule requires a ticket)
             if TODO.search(raw) and not re.search(r"MNT-\d+", raw):
-                f.add("todo-ticket", "nit", d.path, ln, "`TODO` without an `MNT-` ticket reference.")
+                f.note("todo-ticket", d.path, ln, "`TODO` without an `MNT-` ticket reference.")
 
 
 # ---------------------------------------------------------------- feature flags

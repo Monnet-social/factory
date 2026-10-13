@@ -198,3 +198,6 @@ highest.
 - Product or design choices that match Figma but not the ticket wording: `question` at most.
 - Speculative "could be slow" without a concrete hot path or measured size.
 - Asking for a lock file change: `pubspec.lock` is gitignored.
+- ARB housekeeping the pre-commit hook owns: a missing `description`, `@key` blocks on keys without
+  placeholders, blank lines or escapes in ARB files. Only placeholder metadata matters (section 9).
+- A `TODO` without a ticket reference.

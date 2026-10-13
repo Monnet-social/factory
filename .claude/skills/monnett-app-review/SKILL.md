@@ -44,6 +44,10 @@ file is missing, continue without it and say so in `notes`.
    - Changed widget with `await`: `mounted` / `context.mounted` before using `context`; controllers,
      subscriptions and timers created are disposed or cancelled.
    - Changed navigation: `go` vs `push`, `state.extra` null on re-parse, guards on every entry point.
+   - Removed or relaxed guard (a gate, flag, status check, `if` around an action, a limit): list
+     everything it protected, not only the case the ticket names (re-entrancy and stacked sheets,
+     limits for unlimited/unloaded values, fallbacks when a backend field is missing), and check
+     each still holds.
 4. **Contract pass.** For added or changed DTOs, API clients and JSON keys: find the matching
    resource/DTO in `core/` (Grep the path or the snake_case key under `core/src/main/java`) and check
    key names, nullability, envelope keys, id types and enum strings. A key that does not exist on core
