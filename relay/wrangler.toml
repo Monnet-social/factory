@@ -14,7 +14,8 @@ binding = "SEEN"
 id = "95009b3b7eb249f5a93d437166f1ce46"
 
 # secrets (not in this file):
-#   npx wrangler secret put BB_WEBHOOK_SECRET
+#   npx wrangler secret put BB_WEBHOOK_SECRET       (monnett-core webhook)
+#   npx wrangler secret put BB_WEBHOOK_SECRET_APP   (monnett-app webhook)
 #   npx wrangler secret put ROUTINE_FIRE_URL        (monnett-core routine)
 #   npx wrangler secret put ROUTINE_FIRE_TOKEN
 #   npx wrangler secret put ROUTINE_FIRE_URL_APP    (monnett-app routine)

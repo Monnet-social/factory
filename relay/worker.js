@@ -4,7 +4,8 @@
 // repo's routine once per head SHA.
 //
 // Var ROUTES: JSON {"workspace/repo": "<suffix>"}; each repo has its own routine, whose secrets are
-// ROUTINE_FIRE_URL<suffix> and ROUTINE_FIRE_TOKEN<suffix> (core: empty suffix). Secret: BB_WEBHOOK_SECRET.
+// ROUTINE_FIRE_URL<suffix> and ROUTINE_FIRE_TOKEN<suffix> (core: empty suffix). Webhook secrets:
+// BB_WEBHOOK_SECRET (core webhook), BB_WEBHOOK_SECRET_APP (app webhook).
 // Optional KV binding SEEN: remembers the last fired SHA per PR (title/description edits do not re-fire).
 
 const EVENTS = new Set(["pullrequest:created", "pullrequest:updated"]);
@@ -20,7 +21,10 @@ export default {
 async function handle(req, env) {
   if (req.method !== "POST") return new Response("ok");
   const body = await req.text();
-  if (!(await validSignature(req.headers.get("X-Hub-Signature") || "", body, env.BB_WEBHOOK_SECRET))) {
+  const sig = req.headers.get("X-Hub-Signature") || "";
+  // one secret per repo webhook (core: BB_WEBHOOK_SECRET); any configured one authenticates the body
+  const secrets = [env.BB_WEBHOOK_SECRET, env.BB_WEBHOOK_SECRET_APP].filter(Boolean);
+  if (!(await anyValid(sig, body, secrets))) {
     return new Response("bad signature", { status: 401 });
   }
   if (!EVENTS.has(req.headers.get("X-Event-Key"))) return new Response("ignored: event");
@@ -52,6 +56,11 @@ async function handle(req, env) {
   if (!r.ok) return new Response(`fire failed ${r.status}`, { status: 502 });
   if (env.SEEN) await env.SEEN.put(key, sha, { expirationTtl: 60 * 60 * 24 * 30 });
   return new Response(`fired pr=${id} sha=${sha}`);
+}
+
+async function anyValid(header, body, secrets) {
+  for (const secret of secrets) if (await validSignature(header, body, secret)) return true;
+  return false;
 }
 
 // Bitbucket sends X-Hub-Signature: sha256=<hex HMAC of the raw body>.
