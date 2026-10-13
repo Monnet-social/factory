@@ -6,7 +6,7 @@ compatibility_date = "2026-10-01"
 enabled = true
 
 [vars]
-REPO = "monnett-social/monnett-core"
+ROUTES = '{"monnett-social/monnett-core": "", "monnett-social/monnett-app": "_APP"}'
 
 # created with: npx wrangler kv namespace create SEEN
 [[kv_namespaces]]
@@ -15,5 +15,7 @@ id = "95009b3b7eb249f5a93d437166f1ce46"
 
 # secrets (not in this file):
 #   npx wrangler secret put BB_WEBHOOK_SECRET
-#   npx wrangler secret put ROUTINE_FIRE_URL
+#   npx wrangler secret put ROUTINE_FIRE_URL        (monnett-core routine)
 #   npx wrangler secret put ROUTINE_FIRE_TOKEN
+#   npx wrangler secret put ROUTINE_FIRE_URL_APP    (monnett-app routine)
+#   npx wrangler secret put ROUTINE_FIRE_TOKEN_APP

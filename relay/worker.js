@@ -1,8 +1,10 @@
 // Bitbucket webhook → Claude Code routine /fire relay.
 // Bitbucket cannot send the Authorization and anthropic-* headers /fire needs, so this Worker
-// verifies the webhook signature, keeps only open non-draft PRs of one repo, and fires once per head SHA.
+// verifies the webhook signature, keeps only open non-draft PRs of the routed repos, and fires the
+// repo's routine once per head SHA.
 //
-// Secrets: BB_WEBHOOK_SECRET, ROUTINE_FIRE_URL, ROUTINE_FIRE_TOKEN. Var: REPO (workspace/repo).
+// Var ROUTES: JSON {"workspace/repo": "<suffix>"}; each repo has its own routine, whose secrets are
+// ROUTINE_FIRE_URL<suffix> and ROUTINE_FIRE_TOKEN<suffix> (core: empty suffix). Secret: BB_WEBHOOK_SECRET.
 // Optional KV binding SEEN: remembers the last fired SHA per PR (title/description edits do not re-fire).
 
 const EVENTS = new Set(["pullrequest:created", "pullrequest:updated"]);
@@ -25,18 +27,22 @@ async function handle(req, env) {
 
   const pr = JSON.parse(body).pullrequest;
   if (!pr || pr.state !== "OPEN" || pr.draft) return new Response("ignored: state");
-  if (pr.destination?.repository?.full_name !== env.REPO) return new Response("ignored: repo");
+  const suffix = JSON.parse(env.ROUTES || "{}")[pr.destination?.repository?.full_name];
+  if (suffix === undefined) return new Response("ignored: repo");
+  const fireUrl = env[`ROUTINE_FIRE_URL${suffix}`];
+  const fireToken = env[`ROUTINE_FIRE_TOKEN${suffix}`];
+  if (!fireUrl || !fireToken) return new Response(`ignored: no routine secrets for ${suffix || "core"}`);
   const id = String(pr.id);
   const sha = pr.source?.commit?.hash || "";
   if (!/^\d{1,6}$/.test(id) || !/^[0-9a-f]{7,40}$/.test(sha)) return new Response("ignored: payload");
 
-  const key = `pr:${id}`;
+  const key = `${suffix.toLowerCase()}pr:${id}`; // core keeps the original `pr:<id>` keys
   if (env.SEEN && (await env.SEEN.get(key)) === sha) return new Response("ignored: seen");
 
-  const r = await fetch(env.ROUTINE_FIRE_URL, {
+  const r = await fetch(fireUrl, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${env.ROUTINE_FIRE_TOKEN}`,
+      Authorization: `Bearer ${fireToken}`,
       "anthropic-beta": "experimental-cc-routine-2026-04-01",
       "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",

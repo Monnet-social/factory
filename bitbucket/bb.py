@@ -5,19 +5,21 @@ Env:
   BB_TOKEN   Bitbucket token (repository/workspace access token → Bearer; with BB_USER → Basic)
   BB_USER    optional, Atlassian account email for API-token Basic auth
   BB_GIT_USER  git HTTPS user (default x-token-auth for access tokens)
-  BB_WORKSPACE (default monnett-social), BB_REPO (default monnett-core)
+  BB_WORKSPACE (default monnett-social), BB_REPO (default monnett-core; --repo overrides)
   JIRA_EMAIL, JIRA_TOKEN  optional, for the ticket text
 
 Commands:
-  bb.py prepare --pr 123 --sha abcdef0 --workdir work   → prints READY <ws> | SKIP <reason>
-  bb.py post --pr 123 --sha abcdef0 --review work/review.json [--dry-run]   (posts only if REVIEW_MODE=live)
-  bb.py feedback [--since 2026-10-08]   → developer replies (useful / wrong / noise) and fixes of AI findings, as JSON
+  bb.py [--repo monnett-app] prepare --pr 123 --sha abcdef0 --workdir work   → prints READY <ws> | SKIP <reason>
+  bb.py [--repo …] post --pr 123 --sha abcdef0 --review work/review.json [--dry-run]
+        (posts only if REVIEW_MODE=live and the repo is enabled for live in REPOS)
+  bb.py [--repo …] feedback [--since 2026-10-08]   → developer replies (useful / wrong / noise) and fixes of AI findings, as JSON
 """
 import argparse
 import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -27,6 +29,15 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 FACTORY = os.path.dirname(HERE)
 WS_NAME = os.environ.get("BB_WORKSPACE", "monnett-social")
+# Per repository: checkout dir in the workspace (the skill reads it), pre-check script, whether open PRs'
+# Flyway migrations are collected, read-only context repos ({dir: (repo, branch)}, e.g. the backend contract
+# for the app), and whether posting is allowed at all (a second gate after REVIEW_MODE, so one repo can stay
+# in shadow while the shared environment is live).
+REPOS = {
+    "monnett-core": {"dir": "core", "precheck": "precheck.py", "flyway": True, "context": {}, "live": True},
+    "monnett-app": {"dir": "app", "precheck": "precheck_app.py", "flyway": False,
+                    "context": {"core": ("monnett-core", "develop")}, "live": False},
+}
 REPO = os.environ.get("BB_REPO", "monnett-core")
 API = f"https://api.bitbucket.org/2.0/repositories/{WS_NAME}/{REPO}"
 MARKER = "[//]: # (monnett-ai-review sha={sha})"
@@ -73,8 +84,6 @@ def sh(*cmd, cwd=None):
         tok = os.environ.get("BB_TOKEN") or "\0"
         raise RuntimeError(f"{' '.join(cmd)} → exit {r.returncode}: {r.stderr.strip()}".replace(tok, "***"))
     return r.stdout.strip()
-
-
 
 
 def thread_replies(comments, root_id, bot=False):
@@ -147,40 +156,47 @@ def prepare(a):
     if not head.startswith(a.sha[:12]) and not a.sha.startswith(head[:12]):
         print(f"SKIP PR head moved to {head[:12]} (a newer run will review it)")
         return
-    if already_reviewed(a.pr, head):
+    if not a.force and already_reviewed(a.pr, head):
         print(f"SKIP already reviewed {head[:12]}")
         return
     ws = os.path.abspath(a.workdir)
-    core = os.path.join(ws, "core")
+    cfg = REPOS[REPO]
+    checkout = os.path.join(ws, cfg["dir"])
     os.makedirs(os.path.join(ws, "pr"), exist_ok=True)
     user = os.environ.get("BB_GIT_USER", "x-token-auth")
     url = f"https://{user}:{os.environ['BB_TOKEN']}@bitbucket.org/{WS_NAME}/{REPO}.git"
-    if not os.path.exists(core):
-        # full clone (~13 MB): blobs must be local, the token is dropped from the remote below
-        sh("git", "clone", "--quiet", url, core)
+    if not os.path.exists(checkout):
+        # full clone: blobs must be local, the token is dropped from the remote below
+        sh("git", "clone", "--quiet", url, checkout)
     dest = pr["destination"]["branch"]["name"]
     src = pr["source"]["branch"]["name"]
-    sh("git", "fetch", "--quiet", "origin", dest, src, cwd=core)
-    full_head = sh("git", "rev-parse", f"origin/{src}", cwd=core)
-    sh("git", "checkout", "--quiet", "--detach", full_head, cwd=core)
-    sh("git", "remote", "set-url", "origin", f"https://bitbucket.org/{WS_NAME}/{REPO}.git", cwd=core)  # drop token from config
-    base = sh("git", "merge-base", f"origin/{dest}", full_head, cwd=core)
+    sh("git", "fetch", "--quiet", "origin", dest, src, cwd=checkout)
+    full_head = sh("git", "rev-parse", f"origin/{src}", cwd=checkout)
+    sh("git", "checkout", "--quiet", "--detach", full_head, cwd=checkout)
+    sh("git", "remote", "set-url", "origin", f"https://bitbucket.org/{WS_NAME}/{REPO}.git", cwd=checkout)  # drop token from config
+    base = sh("git", "merge-base", f"origin/{dest}", full_head, cwd=checkout)
     p = lambda n: os.path.join(ws, "pr", n)
     jira = re.search(r"MNT-\d+", pr["title"] + " " + src)
     json.dump({"pr": pr["id"], "title": pr["title"], "description": pr.get("description") or "",
                "author": pr["author"]["display_name"], "source_branch": src, "dest_branch": dest,
                "jira": jira.group(0) if jira else None, "head": full_head, "base": base},
               open(p("meta.json"), "w"), indent=1, ensure_ascii=False)
-    open(p("diff.patch"), "w").write(sh("git", "diff", "-M", base, full_head, cwd=core))
-    open(p("files.txt"), "w").write(sh("git", "diff", "-M", "--name-status", base, full_head, cwd=core))
-    json.dump(open_pr_migrations(pr["id"]), open(p("open-migrations.json"), "w"))
+    open(p("diff.patch"), "w").write(sh("git", "diff", "-M", base, full_head, cwd=checkout))
+    open(p("files.txt"), "w").write(sh("git", "diff", "-M", "--name-status", base, full_head, cwd=checkout))
+    json.dump(open_pr_migrations(pr["id"]) if cfg["flyway"] else [], open(p("open-migrations.json"), "w"))
     prior = ai_threads(comments_of(a.pr))
     json.dump(list(prior.values()), open(p("prior-review.json"), "w"), indent=1, ensure_ascii=False)
-    sh(sys.executable, os.path.join(FACTORY, "checks", "precheck.py"), "--repo", core, "--base", base,
+    sh(sys.executable, os.path.join(FACTORY, "checks", cfg["precheck"]), "--repo", checkout, "--base", base,
        "--head", full_head, "--develop", f"origin/{dest}", "--open-migrations", p("open-migrations.json"),
        "--out", p("precheck.json"))
     if jira and os.environ.get("JIRA_TOKEN"):
         sh(sys.executable, os.path.join(FACTORY, "jira", "jira_issue.py"), jira.group(0), "--out", p("jira.md"))
+    for d, (repo, branch) in cfg["context"].items():  # tree only: no history, no token left on disk
+        ctx = os.path.join(ws, d)
+        if not os.path.exists(ctx):
+            sh("git", "clone", "--quiet", "--depth", "1", "--branch", branch,
+               f"https://{user}:{os.environ['BB_TOKEN']}@bitbucket.org/{WS_NAME}/{repo}.git", ctx)
+            shutil.rmtree(os.path.join(ctx, ".git"))
     print(f"READY {ws}")
 
 
@@ -240,7 +256,7 @@ def post(a):
                   "or `noise` to any AI comment._",
               "", MARKER.format(sha=a.sha[:12])]
     summary = "\n".join(lines)
-    if a.dry_run or os.environ.get("REVIEW_MODE") != "live":  # shadow unless explicitly live
+    if a.dry_run or os.environ.get("REVIEW_MODE") != "live" or not REPOS[REPO]["live"]:  # shadow unless explicitly live
         print(json.dumps({"summary": summary, "inline": [{"path": f["path"], "line": f["line"], "text": render(f)} for f in inline],
                           "carried": [f["title"] for f in carried], "answered": [f["title"] for f in answered],
                           "fixed": [{"comment": t["id"], "reply": fixed_reply(a.sha, ev)} for t, ev in fixed]},
@@ -295,12 +311,15 @@ def feedback(a):
 
 
 def main():
+    global REPO, API
     ap = argparse.ArgumentParser()
+    ap.add_argument("--repo", default=REPO, choices=sorted(REPOS))
     sub = ap.add_subparsers(dest="cmd", required=True)
     p1 = sub.add_parser("prepare")
     p1.add_argument("--pr", required=True)
     p1.add_argument("--sha", required=True)
     p1.add_argument("--workdir", default="work")
+    p1.add_argument("--force", action="store_true", help="local testing: prepare even if this SHA was reviewed")
     p2 = sub.add_parser("post")
     p2.add_argument("--pr", required=True)
     p2.add_argument("--sha", required=True)
@@ -309,6 +328,7 @@ def main():
     p3 = sub.add_parser("feedback")
     p3.add_argument("--since", default="2026-10-08")
     a = ap.parse_args()
+    REPO, API = a.repo, f"https://api.bitbucket.org/2.0/repositories/{WS_NAME}/{a.repo}"
     {"prepare": prepare, "post": post, "feedback": feedback}[a.cmd](a)
 
 
