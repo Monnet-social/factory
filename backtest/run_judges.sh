@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # Judge every reviewed workspace: copy first-round human comments + the post-review patch in, run the judge.
-# Usage: run_judges.sh <runs dir> <selection.json> <core repo> [parallel=4] [model=opus]
+# Usage: run_judges.sh <runs dir> <selection.json> <repo clone> [parallel=4] [model=opus] [target=core|app]
 set -uo pipefail
-RUNS=${1:?}; SEL=${2:?}; REPO=${3:?}; PAR=${4:-4}; MODEL=${5:-opus}
+RUNS=${1:?}; SEL=${2:?}; REPO=${3:?}; PAR=${4:-4}; MODEL=${5:-opus}; TARGET=${6:-core}
 HERE=$(cd "$(dirname "$0")" && pwd)
+case $TARGET in
+  core) STACK="Java/Quarkus"
+        CATS="tests|ac-scope|correctness|privacy-security|flyway|api-contract|layering|transactions|i18n|performance|docs-deadcode|side-files|logging|process|other" ;;
+  app) STACK="Flutter/Dart, Cubit"
+       CATS="correctness|tests|docs-deadcode|state|ui-a11y|async-lifecycle|api-contract|ac-scope|l10n|platform|navigation|layering|duplication|error-handling|performance|theming|leaks|flags-config|deps|logging|analytics|privacy-security|process|other" ;;
+  *) echo "unknown target $TARGET" >&2; exit 2 ;;
+esac
+JUDGE=$(sed -e "s|{{REPO}}|monnett-$TARGET|g" -e "s|{{STACK}}|$STACK|g" -e "s|{{DIR}}|$TARGET|g" \
+            -e "s|{{SKILL}}|monnett-$TARGET-review|g" -e "s#{{CATEGORIES}}#$CATS#g" "$HERE/judge.md")
 
 python3 -I - "$RUNS" "$SEL" "$REPO" <<'EOF'
 import json, os, subprocess, sys
@@ -24,12 +33,12 @@ judge_one() {
   ws=$1
   [ -s "$ws/review.json" ] || return
   [ -s "$ws/judge.json" ] && { echo "skip $(basename "$ws")"; return; }
-  ( cd "$ws" && claude -p "$(cat "$HERE/judge.md")" \
+  ( cd "$ws" && claude -p "$JUDGE" \
       --model "$MODEL" --setting-sources project --strict-mcp-config --no-session-persistence \
       --allowedTools "Read,Grep,Glob,Write" \
       --disallowedTools "Bash,WebFetch,WebSearch,Agent,Edit,NotebookEdit,Skill" \
       --output-format json > judge-run.json 2> judge-run.err )
   echo "$(basename "$ws") judge exit=$? judge=$([ -s "$ws/judge.json" ] && echo yes || echo NO)"
 }
-export -f judge_one; export HERE MODEL
+export -f judge_one; export JUDGE MODEL
 ls -d "$RUNS"/PR-* | xargs -P "$PAR" -I{} bash -c 'judge_one "$@"' _ {}

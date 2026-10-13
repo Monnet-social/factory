@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Aggregate backtest results: recall vs human first-round comments, precision of AI findings, cost.
 
-Usage: score.py --runs <dir> --selection selection.json [--out report.json]
+Usage: score.py --runs <dir> --selection selection.json [--origin classification.json] [--out report.json]
+--origin: per human comment {"id", "ai": "H"|"A"}; "A" = a pasted ad-hoc AI review. Recall is then also
+          reported per origin, since agreement with "A" comments is model-vs-model.
 """
 import argparse
 import collections
@@ -21,9 +23,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", required=True)
     ap.add_argument("--selection", required=True)
+    ap.add_argument("--origin")
     ap.add_argument("--out")
     a = ap.parse_args()
     sel = {x["pr"]: x for x in json.load(open(a.selection))["selected"]}
+    origin = {str(c["id"]): c.get("ai") for c in json.load(open(a.origin))} if a.origin else {}
 
     rows, hum, ai = [], [], []
     cost = dur = turns = 0.0
@@ -46,6 +50,7 @@ def main():
         if jd:
             for h in jd.get("human", []):
                 h["pr"] = pr
+                h["origin"] = origin.get(str(h.get("id")))
                 hum.append(h)
             src = {f["id"]: f for f in fs}
             for j in jd.get("ai", []):
@@ -81,6 +86,8 @@ def main():
         "recall_overall": recall(sub),
         "recall_by_human_severity": by_sev,
         "recall_by_category": by_cat,
+        **({"recall_by_origin": {o: {"n": len(v), "recall": recall(v)} for o, v in group(sub, "origin").items()}}
+           if origin else {}),
         "ai_precision_overall": precision(ai),
         "ai_precision_by_severity": {s: precision(v) for s, v in group(ai, "severity").items()},
         "ai_precision_by_source": {s: precision(v) for s, v in group(ai, "source").items()},

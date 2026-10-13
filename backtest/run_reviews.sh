@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Run the reviewer headless on every prepared workspace, N in parallel.
 # Each run: cwd = workspace, project settings only, no MCP, no Bash/network tools.
-# Usage: run_reviews.sh <runs dir> [parallel=4] [model=opus]
+# Usage: run_reviews.sh <runs dir> [parallel=4] [model=opus] [target=core|app]
 set -uo pipefail
-RUNS=${1:?runs dir}; PAR=${2:-4}; MODEL=${3:-opus}
+RUNS=${1:?runs dir}; PAR=${2:-4}; MODEL=${3:-opus}; TARGET=${4:-core}
 
-PROMPT='Use the monnett-core-review skill to review the pull request prepared in this workspace
-(pr/ holds the PR data, core/ the repository at the PR head). Follow the skill procedure exactly and
-write the result to review.json in this directory. Write all finding text in English.'
+PROMPT="Use the monnett-$TARGET-review skill to review the pull request prepared in this workspace
+(pr/ holds the PR data, $TARGET/ the repository at the PR head). Follow the skill procedure exactly and
+write the result to review.json in this directory. Write all finding text in English."
 
 review_one() {
   ws=$1

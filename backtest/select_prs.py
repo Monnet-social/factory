@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select historical monnett-core PRs for the reviewer backtest.
+"""Select historical PRs (monnett-core or monnett-app) for the reviewer backtest.
 
 For each PR, reconstruct the "review point": the source/destination commits at the moment the
 first human (non-author) comment was written, so the AI sees exactly what that reviewer saw.
@@ -18,6 +18,7 @@ import re
 import subprocess
 from datetime import datetime
 
+SRC_PATHS = ("src/", "lib/", "test/", "packages/")  # core: src/; app: lib/ test/ packages/
 MAX_LINES = 4000          # src lines changed; larger PRs are reported separately, not reviewed
 NOISE = re.compile(r"^\s*(lgtm|looks good|approved?|thanks|ok|👍|done|fixed)\W*$", re.I)
 
@@ -43,7 +44,7 @@ def has_commit(repo, h):
 
 
 def src_lines(repo, base, head):
-    out = git(repo, "diff", "--numstat", base, head, "--", "src/") or ""
+    out = git(repo, "diff", "--numstat", base, head, "--", *SRC_PATHS) or ""
     n = 0
     for l in out.splitlines():
         a, d, _ = l.split("\t", 2)
