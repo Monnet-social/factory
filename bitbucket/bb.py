@@ -68,7 +68,13 @@ def comments_of(pr):
 
 
 def sh(*cmd, cwd=None):
-    return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if r.returncode != 0:  # the clone URL carries the token: never let it reach the run log
+        tok = os.environ.get("BB_TOKEN") or "\0"
+        raise RuntimeError(f"{' '.join(cmd)} → exit {r.returncode}: {r.stderr.strip()}".replace(tok, "***"))
+    return r.stdout.strip()
+
+
 
 
 def thread_replies(comments, root_id, bot=False):
