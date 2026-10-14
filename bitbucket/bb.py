@@ -36,7 +36,7 @@ WS_NAME = os.environ.get("BB_WORKSPACE", "monnett-social")
 REPOS = {
     "monnett-core": {"dir": "core", "precheck": "precheck.py", "flyway": True, "context": {}, "live": True},
     "monnett-app": {"dir": "app", "precheck": "precheck_app.py", "flyway": False,
-                    "context": {"core": ("monnett-core", "develop")}, "live": False},
+                    "context": {"core": ("monnett-core", "develop")}, "live": True},
 }
 REPO = os.environ.get("BB_REPO", "monnett-core")
 API = f"https://api.bitbucket.org/2.0/repositories/{WS_NAME}/{REPO}"
