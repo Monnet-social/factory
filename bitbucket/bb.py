@@ -13,6 +13,10 @@ Commands:
   bb.py [--repo …] post --pr 123 --sha abcdef0 --review work/review.json [--dry-run]
         (posts only if REVIEW_MODE=live and the repo is enabled for live in REPOS)
   bb.py [--repo …] feedback [--since 2026-10-08]   → developer replies (useful / wrong / noise) and fixes of AI findings, as JSON
+  bb.py [--repo …] reply --pr 123 --comment 456 --workdir work
+        a developer replied in an AI finding thread → prints SKIP <reason> | DONE <action> (handled without the
+        LLM) | JUDGE <ws> (the LLM decides per routine/REPLY.md, then calls reply-post)
+  bb.py [--repo …] reply-post --pr 123 --comment 456 --decision work/decision.json [--dry-run]
 """
 import argparse
 import base64
@@ -44,6 +48,9 @@ MARKER = "[//]: # (monnett-ai-review sha={sha})"
 FINDING_MARKER = "[//]: # (monnett-ai-finding)"
 FIXED_MARKER = "[//]: # (monnett-ai-fixed sha={sha})"
 FIXED_RE = re.compile(r"\(monnett-ai-fixed sha=([0-9a-f]+)\)")
+ACK_MARKER = "[//]: # (monnett-ai-ack c={cid} resolve={resolve})"
+ACK_RE = re.compile(r"\(monnett-ai-ack c=(\d+) resolve=(yes|no)\)")
+BOT_RE = re.compile(r"\(monnett-ai-[a-z]+[ )]")  # every comment the bot posts carries one of its markers
 FEEDBACK = ("useful", "wrong", "noise")
 SEV_LABEL = {"blocking": "Blocking", "should": "Should fix", "nit": "Nit", "question": "Question"}
 
@@ -92,9 +99,13 @@ def thread_replies(comments, root_id, bot=False):
     for c in sorted(comments, key=lambda c: c["id"]):
         if (c.get("parent") or {}).get("id") in ids and not c.get("deleted"):
             ids.add(c["id"])
-            if bool(FIXED_RE.search(c["content"]["raw"] or "")) == bot:
+            if bool(BOT_RE.search(c["content"]["raw"] or "")) == bot:
                 out.append(c)
     return out
+
+
+def is_live(dry_run=False):
+    return not dry_run and os.environ.get("REVIEW_MODE") == "live" and REPOS[REPO]["live"]  # shadow unless explicitly live
 
 
 def fixed_in(comments, root_id):
@@ -161,20 +172,10 @@ def prepare(a):
         return
     ws = os.path.abspath(a.workdir)
     cfg = REPOS[REPO]
-    checkout = os.path.join(ws, cfg["dir"])
-    os.makedirs(os.path.join(ws, "pr"), exist_ok=True)
+    checkout, full_head, base = checkout_head(pr, ws)
     user = os.environ.get("BB_GIT_USER", "x-token-auth")
-    url = f"https://{user}:{os.environ['BB_TOKEN']}@bitbucket.org/{WS_NAME}/{REPO}.git"
-    if not os.path.exists(checkout):
-        # full clone: blobs must be local, the token is dropped from the remote below
-        sh("git", "clone", "--quiet", url, checkout)
     dest = pr["destination"]["branch"]["name"]
     src = pr["source"]["branch"]["name"]
-    sh("git", "fetch", "--quiet", "origin", dest, src, cwd=checkout)
-    full_head = sh("git", "rev-parse", f"origin/{src}", cwd=checkout)
-    sh("git", "checkout", "--quiet", "--detach", full_head, cwd=checkout)
-    sh("git", "remote", "set-url", "origin", f"https://bitbucket.org/{WS_NAME}/{REPO}.git", cwd=checkout)  # drop token from config
-    base = sh("git", "merge-base", f"origin/{dest}", full_head, cwd=checkout)
     p = lambda n: os.path.join(ws, "pr", n)
     jira = re.search(r"MNT-\d+", pr["title"] + " " + src)
     json.dump({"pr": pr["id"], "title": pr["title"], "description": pr.get("description") or "",
@@ -200,6 +201,23 @@ def prepare(a):
     print(f"READY {ws}")
 
 
+def checkout_head(pr, ws):
+    """Clone the repo into the workspace and detach at the PR head; returns (checkout, head, merge base)."""
+    checkout = os.path.join(ws, REPOS[REPO]["dir"])
+    os.makedirs(os.path.join(ws, "pr"), exist_ok=True)
+    user = os.environ.get("BB_GIT_USER", "x-token-auth")
+    if not os.path.exists(checkout):
+        # full clone: blobs must be local, the token is dropped from the remote below
+        sh("git", "clone", "--quiet", f"https://{user}:{os.environ['BB_TOKEN']}@bitbucket.org/{WS_NAME}/{REPO}.git", checkout)
+    dest = pr["destination"]["branch"]["name"]
+    src = pr["source"]["branch"]["name"]
+    sh("git", "fetch", "--quiet", "origin", dest, src, cwd=checkout)
+    full_head = sh("git", "rev-parse", f"origin/{src}", cwd=checkout)
+    sh("git", "checkout", "--quiet", "--detach", full_head, cwd=checkout)
+    sh("git", "remote", "set-url", "origin", f"https://bitbucket.org/{WS_NAME}/{REPO}.git", cwd=checkout)  # drop token from config
+    return checkout, full_head, sh("git", "merge-base", f"origin/{dest}", full_head, cwd=checkout)
+
+
 def head_line(f):
     return f"**AI · {SEV_LABEL.get(f['severity'], f['severity'])}: {f['title']}**"
 
@@ -207,7 +225,7 @@ def head_line(f):
 def render(f):
     fix = f"\n\n**Fix:** {f['fix']}" if f.get("fix") else ""
     return (f"{head_line(f)}\n\n{f['body']}{fix}\n\n"
-            f"_Reply `useful`, `wrong` or `noise` — it scores the AI reviewer pilot._\n\n{FINDING_MARKER}")
+            f"_Reply `useful`, `wrong` or `noise`: it scores the AI reviewer pilot._\n\n{FINDING_MARKER}")
 
 
 def post(a):
@@ -241,8 +259,8 @@ def post(a):
     inline = [f for f in new if f["severity"] in ("blocking", "should", "question") and f.get("path") and f.get("line")]
     rest = [f for f in new if f not in inline]
     counts = {s: sum(1 for f in new if f["severity"] == s) for s in SEV_LABEL}
-    lines = [f"**AI review** (`{a.sha[:12]}`) — " + ", ".join(f"{n} {SEV_LABEL[s].lower()}{'s' if n > 1 and s in ('nit', 'question') else ''}" for s, n in counts.items() if n)
-             if new else f"**AI review** (`{a.sha[:12]}`) — no new findings.", "", rv.get("summary", "")]
+    lines = [f"**AI review** (`{a.sha[:12]}`): " + ", ".join(f"{n} {SEV_LABEL[s].lower()}{'s' if n > 1 and s in ('nit', 'question') else ''}" for s, n in counts.items() if n)
+             if new else f"**AI review** (`{a.sha[:12]}`): no new findings.", "", rv.get("summary", "")]
     if rest:
         lines += ["", *[f"- **{SEV_LABEL.get(f['severity'])}** `{f.get('path') or ''}{':' + str(f['line']) if f.get('line') else ''}` "
                         f"{f['title']}: {f['body']}" for f in rest]]
@@ -256,7 +274,7 @@ def post(a):
                   "or `noise` to any AI comment._",
               "", MARKER.format(sha=a.sha[:12])]
     summary = "\n".join(lines)
-    if a.dry_run or os.environ.get("REVIEW_MODE") != "live" or not REPOS[REPO]["live"]:  # shadow unless explicitly live
+    if not is_live(a.dry_run):
         print(json.dumps({"summary": summary, "inline": [{"path": f["path"], "line": f["line"], "text": render(f)} for f in inline],
                           "carried": [f["title"] for f in carried], "answered": [f["title"] for f in answered],
                           "fixed": [{"comment": t["id"], "reply": fixed_reply(a.sha, ev)} for t, ev in fixed]},
@@ -310,6 +328,113 @@ def feedback(a):
     print(json.dumps({"totals": totals, "comments": out}, indent=1, ensure_ascii=False))
 
 
+LABEL_SEV = {v: k for k, v in SEV_LABEL.items()}
+ANSWERED_TEXT = "**AI · Answered, thanks.** Resolving the question."
+YIELD_TEXT = "**AI · Noted.** The decision is yours; resolving."
+
+
+def ack_reply(cid, text, resolve):
+    return f"{text}\n\n{ACK_MARKER.format(cid=cid, resolve='yes' if resolve else 'no')}"
+
+
+def send_ack(pr, root_id, cid, text, resolve, dry_run=False):
+    """Reply under the developer's comment (text may be empty: resolve only) and resolve the thread if asked."""
+    if not is_live(dry_run):
+        print(json.dumps({"dry_run": True, "thread": root_id, "reply_to": cid, "text": text, "resolve": resolve}, ensure_ascii=False))
+        return
+    if text:
+        api("POST", f"/pullrequests/{pr}/comments", {"content": {"raw": ack_reply(cid, text, resolve)}, "parent": {"id": cid}})
+    if resolve:
+        api("POST", f"/pullrequests/{pr}/comments/{root_id}/resolve")
+
+
+def reply_thread(pr, cid):
+    """(comments, the developer's comment, root finding) or a SKIP reason."""
+    comments = comments_of(pr)
+    by_id = {c["id"]: c for c in comments}
+    c = by_id.get(int(cid))
+    if not c or c.get("deleted"):
+        return "comment not found"
+    if BOT_RE.search(c["content"]["raw"] or ""):
+        return "own comment"
+    root = c
+    while (root.get("parent") or {}).get("id") in by_id:
+        root = by_id[root["parent"]["id"]]
+    if root is c or FINDING_MARKER not in (root["content"]["raw"] or ""):
+        return "not a reply in an AI finding thread"
+    if root.get("resolution"):
+        return "thread already resolved"
+    if any(int(m.group(1)) == c["id"] for r in thread_replies(comments, root["id"], bot=True)
+           for m in [ACK_RE.search(r["content"]["raw"] or "")] if m):
+        return "already answered"
+    return comments, c, root
+
+
+def reply(a):
+    if not re.fullmatch(r"\d{1,6}", str(a.pr)) or not re.fullmatch(r"\d{1,12}", str(a.comment)):
+        print("SKIP invalid payload")
+        return
+    pr = api("GET", f"/pullrequests/{a.pr}")
+    if pr["state"] != "OPEN":
+        print(f"SKIP PR state {pr['state']}")
+        return
+    t = reply_thread(a.pr, a.comment)
+    if isinstance(t, str):
+        print(f"SKIP {t}")
+        return
+    comments, c, root = t
+    raw = root["content"]["raw"]
+    m = re.match(r"\*\*AI · ([^:]+):", raw)
+    severity = LABEL_SEV.get(m.group(1).strip() if m else "", "should")
+    text = (c["content"]["raw"] or "").strip()
+    bare = re.sub(r"[`*_.,:;!\\\s-]|" + "|".join(FEEDBACK), "", text.lower()) == ""  # only vote words left
+    votes = votes_of([c])
+    acks = [ACK_RE.search(r["content"]["raw"] or "") for r in thread_replies(comments, root["id"], bot=True)]
+    kept_before = any(k and k.group(2) == "no" for k in acks)
+    if severity == "question":
+        send_ack(a.pr, root["id"], c["id"], ANSWERED_TEXT, True)
+        print("DONE question answered, resolved")
+    elif bare and set(votes) & {"wrong", "noise"}:
+        send_ack(a.pr, root["id"], c["id"], "", True)
+        print("DONE vote without explanation, resolved")
+    elif bare:
+        print("SKIP vote only, the thread stays open until the finding is fixed")
+    elif kept_before:  # the bot kept the thread open once already: never argue a second time
+        send_ack(a.pr, root["id"], c["id"], YIELD_TEXT, True)
+        print("DONE second answer, resolved")
+    else:
+        ws = os.path.abspath(a.workdir)
+        checkout, head, base = checkout_head(pr, ws)
+        open(os.path.join(ws, "pr", "diff.patch"), "w").write(sh("git", "diff", "-M", base, head, cwd=checkout))
+        inline = root.get("inline") or {}
+        json.dump({"pr": pr["id"], "title": pr["title"], "head": head, "severity": severity,
+                   "finding": re.sub(r"\[//\]: # \(monnett-ai-[^)]*\)", "", raw).strip(),
+                   "path": inline.get("path"), "line": inline.get("to") or inline.get("from"),
+                   "thread": [{"author": r["user"]["display_name"], "bot": bool(BOT_RE.search(r["content"]["raw"] or "")),
+                               "text": re.sub(r"\[//\]: # \(monnett-ai-[^)]*\)", "", r["content"]["raw"] or "").strip()}
+                              for r in sorted(thread_replies(comments, root["id"]) + thread_replies(comments, root["id"], bot=True),
+                                              key=lambda r: r["id"]) if r["id"] <= c["id"]],
+                   "reply": {"author": c["user"]["display_name"], "text": text}},
+                  open(os.path.join(ws, "pr", "reply.json"), "w"), indent=1, ensure_ascii=False)
+        print(f"JUDGE {ws}")
+
+
+def reply_post(a):
+    d = json.load(open(a.decision))
+    t = reply_thread(a.pr, a.comment)  # re-checked: another run may have answered meanwhile
+    if isinstance(t, str):
+        print(f"SKIP {t}")
+        return
+    _, c, root = t
+    text = re.sub(r"\s+", " ", str(d.get("text") or "")).strip()[:600]
+    if not text:
+        print("SKIP decision without text")
+        return
+    resolve = d.get("resolve") is True
+    send_ack(a.pr, root["id"], c["id"], f"**AI · {'Resolved' if resolve else 'Still open'}:** {text}", resolve, a.dry_run)
+    print(f"DONE {'resolved' if resolve else 'kept open'}")
+
+
 def main():
     global REPO, API
     ap = argparse.ArgumentParser()
@@ -327,9 +452,18 @@ def main():
     p2.add_argument("--dry-run", action="store_true")
     p3 = sub.add_parser("feedback")
     p3.add_argument("--since", default="2026-10-08")
+    p4 = sub.add_parser("reply")
+    p4.add_argument("--pr", required=True)
+    p4.add_argument("--comment", required=True)
+    p4.add_argument("--workdir", default="work")
+    p5 = sub.add_parser("reply-post")
+    p5.add_argument("--pr", required=True)
+    p5.add_argument("--comment", required=True)
+    p5.add_argument("--decision", required=True)
+    p5.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     REPO, API = a.repo, f"https://api.bitbucket.org/2.0/repositories/{WS_NAME}/{a.repo}"
-    {"prepare": prepare, "post": post, "feedback": feedback}[a.cmd](a)
+    {"prepare": prepare, "post": post, "feedback": feedback, "reply": reply, "reply-post": reply_post}[a.cmd](a)
 
 
 if __name__ == "__main__":

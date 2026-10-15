@@ -10,9 +10,10 @@ Design and decisions: `monnett-team/wiki/ai-code-review.md`, `ai-code-review-app
 | `.claude/skills/monnett-app-review/` | Same for the Flutter app (rubric from 255 comments); reads core `develop` for the API contract |
 | `checks/precheck.py` | Deterministic diff-scoped checks: Flyway collisions/idempotency, endpoint security/OpenAPI, Bruno, `.env.example`, AppConfigTest, internal mocks, test `@Transactional`, layering imports, nested types, listener catch, comment length |
 | `checks/precheck_app.py` | App pre-checks without the Flutter SDK: ARB parity/order/metadata, layer imports, flags, DTO tests/defaults, hardcoded strings, context after await, dispose, pubspec |
-| `bitbucket/bb.py` | Routine side (`--repo`, per-repo config in `REPOS`, incl. a live gate): `prepare` (validate payload, clone, diff, pre-checks, Jira → workspace), `post` (inline + summary comments, idempotent per SHA; replies to and resolves earlier findings the reviewer verified as fixed), `feedback` (votes, replies and fixes per AI comment, with totals) |
+| `bitbucket/bb.py` | Routine side (`--repo`, per-repo config in `REPOS`, incl. a live gate): `prepare` (validate payload, clone, diff, pre-checks, Jira → workspace), `post` (inline + summary comments, idempotent per SHA; replies to and resolves earlier findings the reviewer verified as fixed), `feedback` (votes, replies and fixes per AI comment, with totals), `reply`/`reply-post` (a developer reply in an AI finding thread: answered questions and bare `wrong`/`noise` resolved without the LLM, explanations judged per `routine/REPLY.md`, at most one "still open" per thread) |
 | `jira/jira_issue.py` | Jira issue → Markdown (description, AC) |
-| `routine/PROMPT.md`, `PROMPT-app.md` | Routine prompts (API trigger, shadow/live mode via `REVIEW_MODE` and the `REPOS` live gate) |
+| `routine/PROMPT.md`, `PROMPT-app.md` | Routine prompts (API trigger: review `pr=… sha=…` or reply `reply pr=… comment=…`; shadow/live mode via `REVIEW_MODE` and the `REPOS` live gate) |
+| `routine/REPLY.md` | How the routine judges a developer's explanation in a finding thread (resolve or keep open once) |
 | `routine/pull-requests-step.yml` | Bitbucket pipeline step that fires the routine |
 | `relay/` | Cloudflare Worker: Bitbucket webhook (signed) → the repo's routine `/fire` (`ROUTES`), once per PR head SHA; preferred trigger, no pipeline change |
 | `backtest/` | Replay the reviewer on historical PRs at their first-review commit and score it against human comments |
