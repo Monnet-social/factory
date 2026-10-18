@@ -610,6 +610,8 @@ LONE_LITERAL = re.compile(r"""^\s*(['"])((?:\\.|(?!\1).)*)\1\s*[,)]*\s*;?\s*$"""
 UI_EXEMPT = re.compile(r"\b(Key|ValueKey|debugLabel|heroTag|restorationId|name)\b\s*[(:]|assets/|\.(png|svg|jpg|json|webp)\b")
 IGNORE_HARDCODED = re.compile(r"//\s*ignore\s*:\s*([\w/,\s]*hardcoded_string)(.*)$")
 TODO = re.compile(r"//.*\bTODO\b")
+THEME_COLORS = re.compile(r"\bThemeColors\s*\.\s*\w+")
+THEME_COLORS_FILE = "lib/common/constant/color_const.dart"
 
 
 def has_words(literal):
@@ -679,6 +681,11 @@ def check_dart_lines(repo, files, head, cache, f):
             # 20. TODO without ticket: context only, the backtest judged it noise (no rule requires a ticket)
             if TODO.search(raw) and not re.search(r"MNT-\d+", raw):
                 f.note("todo-ticket", d.path, ln, "`TODO` without an `MNT-` ticket reference.")
+            # 21. deprecated ThemeColors on an added line. Moved or re-wrapped legacy code counts too: the
+            # diff cannot tell a moved line from a new widget, and touched code should migrate (one grouped nit)
+            if d.path != THEME_COLORS_FILE and THEME_COLORS.search(code):
+                f.add("deprecated-theme-colors", "nit", d.path, ln,
+                      "Added line uses the deprecated `ThemeColors`; use the `AppColors.*` token with the same colour (rubric §15).")
 
 
 # ---------------------------------------------------------------- feature flags
