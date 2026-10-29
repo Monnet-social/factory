@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 
 PKG = "monnet"
 ARB_DIR = "lib/l10n/"
-LOCALES = ("en", "de", "fr")
 TEMPLATE = f"{ARB_DIR}intl_en.arb"
 LEGACY_DIRS = ("lib/common/", "lib/services/", "lib/controllers/", "lib/views/", "lib/cubits/", "lib/providers/")
 TARGET_DIRS = ("lib/core/", "lib/data/", "lib/domain/", "lib/presentation/")
@@ -33,6 +32,9 @@ LOGIC_DIRS = ("lib/presentation/bloc/", "lib/domain/", "lib/data/", "lib/core/ut
 GENERATED_L10N = re.compile(r"^lib/l10n/app_localizations.*\.dart$")
 SDK_DEPS = {"flutter", "flutter_localizations", "flutter_test", "flutter_driver", "integration_test"}
 MAX_SITES = 5
+# CI fails a PR on these itself (`.githooks/l10n/arb_guard.py`, the error-level `hardcoded_string` lint),
+# so a hit is context for the reviewer, not a finding (REVIEW.md "Do not report")
+CI_GATED = {"arb-parity", "arb-duplicate-key", "arb-locale-placeholders", "arb-dead-key", "hardcoded-ui-string"}
 
 
 # ---------------------------------------------------------------- git helpers
@@ -47,6 +49,12 @@ def git(repo, *args, check=True):
 def show(repo, rev, path):
     r = subprocess.run(["git", "-C", repo, "show", f"{rev}:{path}"], capture_output=True, text=True, errors="replace")
     return r.stdout if r.returncode == 0 else None
+
+
+def ls_arb(repo, rev):
+    """Locale codes of the `intl_<locale>.arb` catalogues at `rev`."""
+    out = git(repo, "ls-tree", "--name-only", rev, "--", ARB_DIR, check=False)
+    return {m.group(1) for m in re.finditer(r"intl_(\w+)\.arb$", out, re.M)}
 
 
 @dataclass
@@ -93,6 +101,9 @@ class Findings:
         self.info = []
 
     def add(self, check, severity, path, line, message):
+        if check in CI_GATED:
+            self.note(check, path, line, message + " (CI fails on this.)")
+            return
         self.items.append({"check": check, "severity": severity, "path": path,
                            "line": line, "message": message})
 
@@ -412,11 +423,14 @@ def check_arb(repo, files, base, head, develop, added_dart, f):
     touched = [p for p in files if p.startswith(ARB_DIR) and p.endswith(".arb")]
     if not touched:
         return
-    head_txt = {l: show(repo, head, f"{ARB_DIR}intl_{l}.arb") for l in LOCALES}
-    base_txt = {l: show(repo, base, f"{ARB_DIR}intl_{l}.arb") for l in LOCALES}
-    dev_txt = {l: show(repo, develop, f"{ARB_DIR}intl_{l}.arb") for l in LOCALES} if develop else base_txt
+    # every catalogue at the PR head or the base, not a fixed list: a fourth locale (lb) came in MNT-1061
+    names = ls_arb(repo, head) | ls_arb(repo, base)
+    locales = ["en"] + sorted(n for n in names if n != "en")
+    head_txt = {l: show(repo, head, f"{ARB_DIR}intl_{l}.arb") for l in locales}
+    base_txt = {l: show(repo, base, f"{ARB_DIR}intl_{l}.arb") for l in locales}
+    dev_txt = {l: show(repo, develop, f"{ARB_DIR}intl_{l}.arb") for l in locales} if develop else base_txt
     head_p, base_p, dev_p = {}, {}, {}
-    for l in LOCALES:
+    for l in locales:
         path = f"{ARB_DIR}intl_{l}.arb"
         pairs, err = load_arb(head_txt[l])
         if pairs is None:
@@ -447,7 +461,7 @@ def check_arb(repo, files, base, head, develop, added_dart, f):
 
     # 1. key parity at head, minus drift already on the target branch
     en_keys = set(msgs["en"])
-    for l in ("de", "fr"):
+    for l in locales[1:]:
         if l not in msgs:
             continue
         path = f"{ARB_DIR}intl_{l}.arb"
@@ -499,7 +513,7 @@ def check_arb(repo, files, base, head, develop, added_dart, f):
             f.add("arb-metadata", "should", TEMPLATE, ln,
                   f"`{k}` has placeholders ({', '.join(names)}) but no `@{k}` block with `placeholders` (lib/l10n/README.md).")
         if meta is not None and f"@{k}" in order and order.index(f"@{k}") != order.index(k) + 1:
-            f.add("arb-metadata", "nit", TEMPLATE, ln, f"`@{k}` is not directly after `{k}`.")
+            f.note("arb-metadata", TEMPLATE, ln, f"`@{k}` is not directly after `{k}` (the pre-commit hook reorders it).")
         if k in new_en and not (meta or {}).get("description"):
             # README asks for it, practice mostly skips it (101 of 957 keys have one): context, not a finding
             f.note("arb-description", TEMPLATE, ln, f"New key `{k}` has no `description` in its `@` block.")
@@ -511,7 +525,7 @@ def check_arb(repo, files, base, head, develop, added_dart, f):
                           f"`{k}`: `int` placeholder `{name}` is not used as an ICU plural/select (README: int placeholders must).")
 
     # 5. placeholder names differ between en and a translation (for keys the PR touches)
-    for l in ("de", "fr"):
+    for l in locales[1:]:
         if l not in msgs:
             continue
         for k in sorted(changed.get(l, set()) | changed.get("en", set())):
@@ -677,7 +691,7 @@ def check_dart_lines(repo, files, head, cache, f):
                 lit = next((x for x in lits if has_words(x)), None)
                 if lit is not None and not silenced:
                     f.add("hardcoded-ui-string", "should", d.path, ln,
-                          f"User-visible literal `'{lit[:50]}'`; use `context.l10n` with keys in en/de/fr.")
+                          f"User-visible literal `'{lit[:50]}'`; use `context.l10n` with keys in every `intl_*.arb`.")
             # 20. TODO without ticket: context only, the backtest judged it noise (no rule requires a ticket)
             if TODO.search(raw) and not re.search(r"MNT-\d+", raw):
                 f.note("todo-ticket", d.path, ln, "`TODO` without an `MNT-` ticket reference.")

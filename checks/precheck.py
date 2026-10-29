@@ -8,13 +8,14 @@ Severity: blocking | should | nit.
 Usage:
   precheck.py --repo <core git dir> --base <sha> --head <sha>
               [--develop <ref>] [--open-migrations <json>] [--out <file>]
---develop:          state of the target branch the PR will merge into (Flyway collisions).
---open-migrations:  JSON [{"pr": 123, "files": ["V0031__x.sql", ...]}] of other open PRs.
+--develop:          state of the target branch the PR will merge into (applied migrations, version clashes).
+--open-migrations:  JSON [{"pr": 123, "files": ["V20261028_1147__x.sql", ...]}] of other open PRs.
 """
 import argparse
 import json
 import re
 import subprocess
+from datetime import datetime
 import sys
 from dataclasses import dataclass, field
 
@@ -98,7 +99,16 @@ class Findings:
 
 # ---------------------------------------------------------------- Flyway
 
-MIG_NAME = re.compile(r"^V(\d+)__([a-z0-9_]+)\.sql$")
+# CLAUDE.md "Flyway migrations" (MNT-1034): new files are `V<YYYYMMDD>_<HHmm>__name.sql` in UTC, out-of-order is
+# on, and the legacy block V0001..V0051 is frozen. Next-number, gap and "an open PR has the same number" checks
+# are gone with the old scheme.
+LEGACY_NAME = re.compile(r"^V(\d{4})__[a-z0-9_]+\.sql$")
+STAMP_NAME = re.compile(r"^V(\d{8})_(\d{4})__[a-z0-9_]+\.sql$")
+
+
+def mig_version(name):
+    m = STAMP_NAME.match(name) or LEGACY_NAME.match(name)
+    return ".".join(m.groups()) if m else None
 
 
 def strip_sql(sql):
@@ -114,12 +124,7 @@ def line_of(text, needle_pos):
 
 def check_flyway(repo, files, head, develop, open_migrations, f):
     dev_files = [p.rsplit("/", 1)[1] for p in ls_tree(repo, develop, MIGRATION_DIR)]
-    dev_versions = {}
-    for n in dev_files:
-        m = MIG_NAME.match(n)
-        if m:
-            dev_versions[int(m.group(1))] = n
-    dev_max = max(dev_versions) if dev_versions else 0
+    dev_versions = {mig_version(n): n for n in dev_files if mig_version(n)}
 
     new_migs = []
     for d in files.values():
@@ -130,46 +135,36 @@ def check_flyway(repo, files, head, develop, open_migrations, f):
             if name in dev_files or (d.old_path and d.old_path.rsplit("/", 1)[1] in dev_files):
                 f.add("flyway-edit-applied", "blocking", d.path, None,
                       f"Changes migration `{name}`, which already exists on the target branch. "
-                      "Flyway validates checksums at startup; edit nothing that may be applied — add a new migration.")
+                      "Flyway validates checksums at startup; edit nothing that may be applied; add a new migration.")
             continue
         if d.status not in ("A", "R"):
             continue
-        m = MIG_NAME.match(name)
+        if LEGACY_NAME.match(name):
+            f.add("flyway-legacy-name", "blocking", d.path, None,
+                  f"`{name}` uses the frozen `V00NN__` block. New migrations are `V<YYYYMMDD>_<HHmm>__…` from "
+                  "`date -u +V%Y%m%d_%H%M` (CLAUDE.md \"Flyway migrations\"); `MigrationHygieneTest` fails on this name.")
+            continue
+        m = STAMP_NAME.match(name)
         if not m:
             f.add("flyway-name", "should", d.path, None,
-                  f"`{name}` does not match `V0XXX__lower_snake_description.sql`.")
+                  f"`{name}` does not match `V<YYYYMMDD>_<HHmm>__lower_snake_description.sql`.")
             continue
-        new_migs.append((int(m.group(1)), name, d))
+        try:
+            datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M")
+        except ValueError:
+            f.add("flyway-name", "should", d.path, None, f"`{name}`: `{m.group(1)}_{m.group(2)}` is not a valid UTC date and time.")
+        new_migs.append((mig_version(name), name, d))
 
-    for ver, name, d in sorted(new_migs):
+    others = {mig_version(o): (x["pr"], o) for x in open_migrations or [] for o in x.get("files", []) if mig_version(o)}
+    for ver, name, d in new_migs:
         if ver in dev_versions and dev_versions[ver] != name:
             f.add("flyway-collision", "blocking", d.path, None,
-                  f"Version {ver} already exists on the target branch as `{dev_versions[ver]}`. "
-                  f"Two migrations with one version make Flyway abort at startup. Next free version: V{dev_max + 1:04d}.")
-        elif ver <= dev_max:
-            f.add("flyway-out-of-order", "blocking", d.path, None,
-                  f"Version {ver} is below the target branch's highest migration V{dev_max:04d}; "
-                  f"with out-of-order disabled Flyway rejects it. Rename to V{dev_max + 1:04d}.")
-    expected = dev_max + 1
-    for ver, name, d in sorted(new_migs):
-        if ver > dev_max:
-            if ver != expected:
-                f.add("flyway-gap", "should", d.path, None,
-                      f"Expected V{expected:04d} (CLAUDE.md: exactly one higher than the current highest), found V{ver:04d}.")
-            expected = ver + 1
-    for other in open_migrations or []:
-        for oname in other.get("files", []):
-            om = MIG_NAME.match(oname)
-            if not om:
-                continue
-            for ver, name, d in new_migs:
-                if int(om.group(1)) == ver and oname != name:
-                    f.add("flyway-collision-open-pr", "should", d.path, None,
-                          f"Open PR #{other['pr']} also adds version {ver} (`{oname}`). Whoever merges second must renumber.")
-
-    for ver, name, d in new_migs:
-        text = show(repo, head, d.path) or ""
-        lint_sql(d.path, text, f)
+                  f"Version {ver} already exists on the target branch as `{dev_versions[ver]}`; Flyway aborts at startup. "
+                  "Regenerate the timestamp.")
+        elif ver in others and others[ver][1] != name:
+            f.add("flyway-collision-open-pr", "should", d.path, None,
+                  f"Open PR #{others[ver][0]} adds the same version {ver} (`{others[ver][1]}`); regenerate one timestamp.")
+        lint_sql(d.path, show(repo, head, d.path) or "", f)
 
 
 def lint_sql(path, text, f):

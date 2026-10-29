@@ -45,6 +45,7 @@ REPOS = {
 REPO = os.environ.get("BB_REPO", "monnett-core")
 API = f"https://api.bitbucket.org/2.0/repositories/{WS_NAME}/{REPO}"
 MARKER = "[//]: # (monnett-ai-review sha={sha})"
+MARKER_RE = re.compile(r"\(monnett-ai-review sha=([0-9a-f]+)\)")
 FINDING_MARKER = "[//]: # (monnett-ai-finding)"
 FIXED_MARKER = "[//]: # (monnett-ai-fixed sha={sha})"
 FIXED_RE = re.compile(r"\(monnett-ai-fixed sha=([0-9a-f]+)\)")
@@ -52,6 +53,8 @@ ACK_MARKER = "[//]: # (monnett-ai-ack c={cid} resolve={resolve})"
 ACK_RE = re.compile(r"\(monnett-ai-ack c=(\d+) resolve=(yes|no)\)")
 BOT_RE = re.compile(r"\(monnett-ai-[a-z]+[ )]")  # every comment the bot posts carries one of its markers
 FEEDBACK = ("useful", "wrong", "noise")
+VOTE_RE = re.compile(r"^\W*(useful|wrong|noise)\b")  # the vote is the reply's first word; later words are prose
+HUMAN_TEXT_MAX = 2000  # pasted ad-hoc reviews run to pages; the opening says what the thread is about
 SEV_LABEL = {"blocking": "Blocking", "should": "Should fix", "nit": "Nit", "question": "Question"}
 
 
@@ -115,7 +118,7 @@ def fixed_in(comments, root_id):
 
 
 def votes_of(replies):
-    return [w for r in replies for w in FEEDBACK if re.search(rf"\b{w}\b", (r["content"]["raw"] or "").lower())]
+    return [m.group(1) for r in replies for m in [VOTE_RE.match((r["content"]["raw"] or "").strip().lower())] if m]
 
 
 def ai_threads(comments):
@@ -138,9 +141,77 @@ def ai_threads(comments):
     return out
 
 
-def already_reviewed(pr, sha):
-    mark = MARKER.format(sha=sha[:12])
-    return any(mark in (c.get("content", {}).get("raw") or "") for c in comments_of(pr))
+def human_threads(comments):
+    """Top-level comments by people with their replies, keyed by comment id: points a reviewer already raised and
+    trade-offs agreed there are settled for the bot too."""
+    out = {}
+    for c in comments:
+        raw = (c.get("content") or {}).get("raw") or ""
+        if c.get("deleted") or c.get("parent") or BOT_RE.search(raw) or not raw.strip():
+            continue
+        inline = c.get("inline") or {}
+        out[c["id"]] = {"id": c["id"], "kind": "human", "author": c["user"]["display_name"], "path": inline.get("path"),
+                        "line": inline.get("to") or inline.get("from"), "created_on": c.get("created_on"),
+                        "text": raw.strip()[:HUMAN_TEXT_MAX], "resolved": bool(c.get("resolution")),
+                        "replies": [{"author": r["user"]["display_name"], "text": (r["content"]["raw"] or "")[:HUMAN_TEXT_MAX]}
+                                    for r in thread_replies(comments, c["id"])]}
+    return out
+
+
+def reviewed_shas(comments):
+    """Short SHAs the bot reviewed on this PR (summary markers), oldest first."""
+    return [m for c in sorted(comments, key=lambda c: c["id"]) for m in MARKER_RE.findall((c.get("content") or {}).get("raw") or "")]
+
+
+def already_reviewed(pr, sha, comments=None):
+    return sha[:12] in reviewed_shas(comments if comments is not None else comments_of(pr))
+
+
+def skip_reason(pr):
+    """Why a PR gets no review at all (REVIEW.md "Scope"), else None."""
+    dest, src = pr["destination"]["branch"]["name"], pr["source"]["branch"]["name"]
+    if pr.get("draft"):
+        return "draft PR"
+    if dest == "main":
+        return "release PR into main (its commits were reviewed on develop)"
+    if dest == "develop" and (src == "main" or src.startswith(("release/", "hotfix/"))):
+        return f"back-merge {src} → develop"
+    return None
+
+
+def patch_id(checkout, base, head):
+    diff = sh("git", "diff", "-M", base, head, cwd=checkout)
+    if not diff:
+        return ""
+    r = subprocess.run(["git", "patch-id", "--stable"], cwd=checkout, input=diff + "\n", capture_output=True, text=True)
+    return r.stdout.split(" ")[0] if r.returncode == 0 else None
+
+
+def unchanged_since(checkout, dest, head, shas):
+    """The reviewed SHA whose PR diff equals the one at `head` (only a base merge or a parent change landed since), else None."""
+    now = patch_id(checkout, sh("git", "merge-base", f"origin/{dest}", head, cwd=checkout), head)
+    if not now:
+        return None
+    for short in reversed(shas):
+        try:
+            old = sh("git", "rev-parse", "--verify", "--quiet", f"{short}^{{commit}}", cwd=checkout)
+            if patch_id(checkout, sh("git", "merge-base", f"origin/{dest}", old, cwd=checkout), old) == now:
+                return short
+        except RuntimeError:  # force-pushed away, or not fetched
+            continue
+    return None
+
+
+def review_rules(checkout, dest):
+    """REVIEW.md as the PR's target branch has it (develop for a stack cut before the file existed), never the PR's own."""
+    for ref in (dest, "develop"):
+        try:
+            if ref != dest:
+                sh("git", "fetch", "--quiet", "origin", ref, cwd=checkout)
+            return sh("git", "show", f"origin/{ref}:REVIEW.md", cwd=checkout), ref
+        except RuntimeError:
+            continue
+    return None, None
 
 
 def open_pr_migrations(exclude):
@@ -167,12 +238,19 @@ def prepare(a):
     if not head.startswith(a.sha[:12]) and not a.sha.startswith(head[:12]):
         print(f"SKIP PR head moved to {head[:12]} (a newer run will review it)")
         return
-    if not a.force and already_reviewed(a.pr, head):
+    if not a.force and (why := skip_reason(pr)):
+        print(f"SKIP {why}")
+        return
+    comments = comments_of(a.pr)
+    if not a.force and already_reviewed(a.pr, head, comments):
         print(f"SKIP already reviewed {head[:12]}")
         return
     ws = os.path.abspath(a.workdir)
     cfg = REPOS[REPO]
     checkout, full_head, base = checkout_head(pr, ws)
+    if not a.force and (same := unchanged_since(checkout, pr["destination"]["branch"]["name"], full_head, reviewed_shas(comments))):
+        print(f"SKIP PR diff unchanged since the review of {same} (base merge or parent change only)")
+        return
     user = os.environ.get("BB_GIT_USER", "x-token-auth")
     dest = pr["destination"]["branch"]["name"]
     src = pr["source"]["branch"]["name"]
@@ -185,8 +263,11 @@ def prepare(a):
     open(p("diff.patch"), "w").write(sh("git", "diff", "-M", base, full_head, cwd=checkout))
     open(p("files.txt"), "w").write(sh("git", "diff", "-M", "--name-status", base, full_head, cwd=checkout))
     json.dump(open_pr_migrations(pr["id"]) if cfg["flyway"] else [], open(p("open-migrations.json"), "w"))
-    prior = ai_threads(comments_of(a.pr))
-    json.dump(list(prior.values()), open(p("prior-review.json"), "w"), indent=1, ensure_ascii=False)
+    prior = list(ai_threads(comments).values()) + list(human_threads(comments).values())
+    json.dump(prior, open(p("prior-review.json"), "w"), indent=1, ensure_ascii=False)
+    rules, ref = review_rules(checkout, dest)
+    if rules is not None:
+        open(p("REVIEW.md"), "w").write(f"<!-- REVIEW.md from origin/{ref} -->\n{rules}\n")
     sh(sys.executable, os.path.join(FACTORY, "checks", cfg["precheck"]), "--repo", checkout, "--base", base,
        "--head", full_head, "--develop", f"origin/{dest}", "--open-migrations", p("open-migrations.json"),
        "--out", p("precheck.json"))
@@ -231,7 +312,12 @@ def render(f):
 def post(a):
     rv = json.load(open(a.review))
     findings = rv.get("findings", [])
-    threads = ai_threads(comments_of(a.pr))
+    comments = comments_of(a.pr)
+    if is_live(a.dry_run) and already_reviewed(a.pr, a.sha, comments):  # a concurrent run for this head posted first
+        print(f"SKIP already reviewed {a.sha[:12]}")
+        return
+    threads = ai_threads(comments)
+    humans = human_threads(comments)
 
     def prior_of(f):  # the reviewer links repeats via prior_id; the exact title is only a fallback
         try:
@@ -254,6 +340,12 @@ def post(a):
         t = prior_of(f)
         if t and t["id"] in fixed_ids:
             continue
+        try:
+            if int(f.get("prior_id")) in humans:  # a person raised it already: theirs, never repeated
+                answered.append(f)
+                continue
+        except (TypeError, ValueError):
+            pass
         # a thread the developer answered or resolved is theirs to close; the bot never repeats it
         (new if t is None else answered if t["replies"] or t["resolved"] else carried).append(f)
     inline = [f for f in new if f["severity"] in ("blocking", "should", "question") and f.get("path") and f.get("line")]
@@ -270,10 +362,23 @@ def post(a):
         lines += ["", f"{len(answered)} finding(s) already answered in their threads were not repeated."]
     if fixed:
         lines += ["", f"{len(fixed)} earlier finding(s) fixed in this commit; their threads were resolved."]
-    lines += ["", "_First-pass AI review against CLAUDE.md and the team rubric (pilot). Reply `useful`, `wrong` "
-                  "or `noise` to any AI comment._",
+    lines += ["", "_First-pass AI review against CLAUDE.md and REVIEW.md (pilot). Reply `useful`, `wrong` "
+                  "or `noise` as the first word of a reply to any AI comment._",
               "", MARKER.format(sha=a.sha[:12])]
     summary = "\n".join(lines)
+    last = max((t for t in threads.values() if t["kind"] == "summary"), key=lambda t: t["id"], default=None)
+    if not new and not fixed and last:  # nothing to say: note the re-check in the last summary, no new comment
+        raw = next(c["content"]["raw"] for c in comments if c["id"] == last["id"])
+        recheck = f"{raw}\n\nRe-checked at `{a.sha[:12]}`: no new findings.\n\n{MARKER.format(sha=a.sha[:12])}"
+        if not is_live(a.dry_run):
+            print(json.dumps({"edit_summary": last["id"], "text": recheck}, indent=1, ensure_ascii=False))
+            return
+        try:
+            api("PUT", f"/pullrequests/{a.pr}/comments/{last['id']}", {"content": {"raw": recheck}})
+            print(f"UPDATED summary {last['id']}: no new findings at {a.sha[:12]}")
+            return
+        except urllib.error.HTTPError as e:
+            print(f"summary edit failed ({e.code}), posting a new one", file=sys.stderr)
     if not is_live(a.dry_run):
         print(json.dumps({"summary": summary, "inline": [{"path": f["path"], "line": f["line"], "text": render(f)} for f in inline],
                           "carried": [f["title"] for f in carried], "answered": [f["title"] for f in answered],
@@ -329,7 +434,7 @@ def feedback(a):
 
 
 LABEL_SEV = {v: k for k, v in SEV_LABEL.items()}
-ANSWERED_TEXT = "**AI · Answered, thanks.** Resolving the question."
+ANSWERED_TEXT = "**AI · Answered.** Resolving the question."
 YIELD_TEXT = "**AI · Noted.** The decision is yours; resolving."
 
 
