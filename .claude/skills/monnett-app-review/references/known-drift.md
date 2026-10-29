@@ -1,6 +1,7 @@
 # Known drift: where CLAUDE.md and the code disagree (monnett-app)
 
-Measured on `develop` at `b5b13145` (2026-10-12). Use this to avoid false findings.
+Measured on `develop` at `b5b13145` (2026-10-12), CI and l10n items updated 2026-10-29. Use this to
+avoid false findings. `REVIEW.md` in the repository wins where this file disagrees with it.
 
 ## CLAUDE.md is stale here: trust the code
 - Legacy list names `lib/providers/`: it does not exist. Riverpod survives in 7 files
@@ -24,15 +25,16 @@ Measured on `develop` at `b5b13145` (2026-10-12). Use this to avoid false findin
 - `lib/domain/entities/` has `fromJson` in 35 files (entities parsing JSON, e.g. `MediaPost`).
   New DTOs go to `data/data_sources/dtos/*_dto.dart`; do not ask to migrate existing entities.
 - "Every DTO ships a `fromJson` test": 11 of 23 DTO files have no test file. Applies to new DTOs.
-- Lint rules in "Linting Notes" are not gated: CI runs `flutter analyze --no-fatal-warnings
-  --no-fatal-infos`, so `hardcoded_string` (WARNING), `avoid_print`, `use_build_context_synchronously`,
-  `directives_ordering`, `always_specify_types` never fail a PR. They are visible in the IDE only.
-- ARB `@metadata`, ICU-plural and placement rules are enforced only by the local pre-commit hook
-  (`scripts/install-git-hooks.sh`), which is not installed on every clone (PR418).
-- CI step "gen-l10n + sync check" cannot fail on drift: `lib/l10n/app_localizations*.dart` are
-  gitignored, so `git diff --exit-code` on them is always clean. CI only proves the ARB files
-  parse. `lib/l10n/README.md` ("CI fails if generated … out of sync") is stale.
-  > ⚠ assumption: inferred from `.gitignore` + `bitbucket-pipelines.yml`, not observed in a CI run.
+- CI gates (`bitbucket-pipelines.yml`), so never report them: `hardcoded_string` in widget arguments
+  is an ERROR-level lint since MNT-899 and fails `flutter analyze`; `.githooks/l10n/arb_guard.py`
+  fails on key parity across every `intl_*.arb`, duplicate keys, ICU syntax, argument parity,
+  `'` before `{`, metadata outside the template, a missing `description`, unused keys and the French
+  `=0` case; `.ci/naming_checks.sh` fails on branch and commit names (`MNT-n|bugfix|chore|release`).
+- Other lint rules in "Linting Notes" are not gated (`--no-fatal-warnings --no-fatal-infos`):
+  `avoid_print`, `use_build_context_synchronously`, `directives_ordering`, `always_specify_types`.
+- Four locales: `en` (template), `de`, `fr`, `lb` (MNT-1061). `localizationEnabled` is gone (MNT-704).
+- Time zones in CI: `test/core/util` runs under `TZ=Europe/Luxembourg`, `notification_dto_test.dart`
+  under `TZ=Pacific/Honolulu`; every other test runs in UTC.
 - Toolchain: CI image and Codemagic build with Flutter 3.41.9; CLAUDE.md and some code comments
   reason about 3.47 behaviour. A plugin fix that needs a newer Flutter may resolve to an older
   version in CI (PR490 camerax).
@@ -64,13 +66,12 @@ Measured on `develop` at `b5b13145` (2026-10-12). Use this to avoid false findin
 - 297 comment blocks over 5 lines in 175 files.
 - `getIt<...>()` called from widgets in 57 files under `presentation/widgets/`.
 - 120 `presentation/` files import `lib/common/`; 42 import `lib/services/`.
-- `AppL10n.current` (global l10n lookup) in 28 files, incl. `Failure` messages.
+- `AppL10n.current` (global l10n lookup) in 21 files, incl. older `Failure` messages. New failures use
+  `FailureReason` (`lib/core/error/failures.dart`, MNT-1062), translated when read.
 - Deprecated widget still in use: `TextViewWidget` (`lib/common/widgets/custom_text.dart`, 46 files).
 - Ticket references in code comments (`MNT-xxx`, 176 hits).
 
 ## Unsettled conventions: do not enforce either way
-- `Failure` carrying localized text via `AppL10n.current` vs a semantic kind localized at render
-  (open debate, PR365).
 - Where pure, framework-free helpers live: `core/util/helpers`, `core/validators` or
   `domain/services` (reviewers disagreed on PR320, PR415).
 - Domain entities importing `dart:ui` / `vector_math` (accepted with a justification on PR320).

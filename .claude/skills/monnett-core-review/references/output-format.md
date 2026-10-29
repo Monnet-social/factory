@@ -12,7 +12,7 @@ Write one JSON object to the output file (default `review.json` in the workspace
       "id": "F1",
       "severity": "blocking",
       "category": "flyway",
-      "path": "src/main/resources/db/migration/V0029__user_display_name_trigram_index.sql",
+      "path": "src/main/resources/db/migration/V20261029_0915__user_display_name_trigram_index.sql",
       "line": 13,
       "title": "Trigram index cannot serve the LOWER(...) LIKE predicate",
       "body": "The query filters on `LOWER(display_name) LIKE :p`, the index is on `display_name gin_trgm_ops`. Postgres uses an expression index only for the same expression, so the search stays a sequential scan.",
@@ -36,11 +36,11 @@ Write one JSON object to the output file (default `review.json` in the workspace
 |---|---|
 | `verdict` | `approve` (no findings), `approve_with_nits` (only nit/question), `changes_requested` (any blocking/should) |
 | `severity` | `blocking`, `should`, `nit`, `question` |
-| `category` | `tests`, `ac-scope`, `correctness`, `privacy-security`, `flyway`, `api-contract`, `layering`, `transactions`, `i18n`, `performance`, `docs-deadcode`, `side-files`, `logging` |
+| `category` | `tests`, `ac-scope`, `correctness`, `privacy-security`, `flyway`, `api-contract`, `layering`, `transactions`, `i18n`, `performance`, `docs-deadcode`, `side-files`, `logging`, `reuse`, `events`, `memory`, `concurrency`, `deploy-compat`, `analytics-disclosure` |
 | `line` | line number in the PR head version of the file; `null` for file-level findings |
 | `confidence` | `high` or `medium` |
 | `source` | `llm` or `precheck:<check-id>` (kept pre-check findings, wording may be improved) |
 | `fixed_prior` | earlier `kind: finding` items from `pr/prior-review.json` that the PR head fixes completely, each with one line of evidence; their threads are resolved. Empty on a first review |
-| `prior_id` | `id` of the earlier finding or summary in `pr/prior-review.json` that raised the same problem, else `null`. Findings with a `prior_id` are never posted again |
+| `prior_id` | `id` of the earlier finding, summary or human comment (`kind: human`) in `pr/prior-review.json` that raised the same problem, else `null`. Findings with a `prior_id` are never posted again |
 
 `body` ≤ 6 lines, Markdown allowed, no headings. Findings ordered by severity, then file.

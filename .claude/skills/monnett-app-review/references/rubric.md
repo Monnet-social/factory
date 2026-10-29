@@ -3,7 +3,9 @@
 Derived from 255 substantive top-level review comments on PRs #308–#507 (2026-06-13…10-12),
 ranked by how often the team raises them ("share" = share of comments that raise the topic; one
 comment can raise several). Each section: what to check, how it fails, real examples (shortened
-quotes, none from PRs in the backtest sample).
+quotes, none from PRs in the backtest sample). Updated after the 2026-10 month review (PRs #508–#600).
+`REVIEW.md` in the repository is the team's standard; where this file disagrees with it, `REVIEW.md`
+wins.
 
 Note on the source: about 56% of these comments are pasted output of ad-hoc Claude reviews
 (structured "Findings / Blocking / Easy win" blocks). The ranking therefore mixes what humans ask
@@ -45,7 +47,9 @@ highest.
   (CLAUDE.md "Testing").
 - Contract boundaries: every new DTO has a `fromJson` test on a real payload; client tests pin the
   query/body on the wire (Dio adapter pattern), not a fake repository.
-- Time-zone logic runs under a fixed non-UTC `TZ`; CI runs in UTC.
+- Calendar-day or DST logic is tested under `test/core/util` (CI runs it under
+  `TZ=Europe/Luxembourg`) or in a file a CI time-zone step runs; elsewhere it runs only in UTC.
+- Locale tables run in every locale, English included. Fixtures are real payloads with every field.
 - Do not ask for tests that restate the implementation; propose deleting redundant ones.
 > "replacing … with a hardcoded `DiscoverScope.city` … leaves all 4 tests in the file green" (PR416)
 > "Removing the `updateSeenPosts` call … leaves all 931 tests green" (PR416)
@@ -116,13 +120,16 @@ highest.
 > a local-testing leftover." (PR420)
 
 ## 9. Localization (share 9%)
-- New user-visible text uses `context.l10n`; no new `// ignore: monnett_lints/hardcoded_string`
-  except for symbols/format tokens with a reason (CLAUDE.md "Linting Notes").
-- Keys present in `intl_en/de/fr.arb`; `@key` block with `placeholders` (and `description`)
-  directly after the key; `int` placeholders in ICU plural (lib/l10n/README.md).
+CI already fails on `hardcoded_string` in widget arguments and on every ARB guard rule (parity across
+`intl_en/de/fr/lb.arb`, ICU, arguments, metadata, `description`, unused keys). Report only what it
+cannot see:
+- New `// ignore: monnett_lints/hardcoded_string` except for symbols/format tokens with a reason
+  (CLAUDE.md "Linting Notes"); user-visible strings outside widget arguments (Dart constants,
+  `Failure` text, notification and push text).
+- One key per variant, no `select`, no translated word in a placeholder; informal register (`du`,
+  `tu`) in every locale; a length hint in `description` for tight UI.
 - Adding `@metadata` to a key with ≥ 2 placeholders reorders the generated method's parameters;
   call sites must follow (compiles, renders swapped values).
-- Keys removed from en are removed from de/fr; keys left without a Dart reference are dead.
 - Copy fits every call site of a shared widget; key namespace matches the widget (`common*`).
 > "Adding metadata here flips the parameter order for two keys, and the call sites were not updated"
 > (PR332)
@@ -158,7 +165,9 @@ highest.
 
 ## 13. Error handling (share 7%)
 - Repository and service methods return `Result<T, Failure>`; side work (cache writes) inside
-  `safeCall` or best-effort with a log.
+  `safeCall` or best-effort with a log. New failures carry a `FailureReason` (MNT-1062); server text
+  shown to users goes through `ErrorMessageExtractor`.
+- A failed next page shows an error with retry instead of ending the list.
 - No silent failures: an empty `catch`, a `debugPrint` in release, a failed save with no UI signal.
 - Hard failures show an error with a retry, not an empty card.
 > "this catch drops the exception without logging it" (PR489)
@@ -179,14 +188,27 @@ highest.
 - Leaks: controllers, video controllers, subscriptions, temp files not disposed or deleted.
 - Feature flags: unreleased work resolves to `kDebugMode`, never `AppEnv`; Remote Config gates for
   subscription UI (CLAUDE.md "Feature flags", "Subscriptions").
-- Dependencies: `any` or unbounded ranges when code relies on version-specific behaviour.
+- Dependencies: `any` or unbounded ranges when code relies on version-specific behaviour; a new
+  package or variant states its binary size impact and licence (e.g. LGPL FFmpegKit `_full`).
 - Logging: `print`/`developer.log` in hot paths; silent `catch` without a log.
 - Analytics: events still fire after route moves; event semantics unchanged under the same name.
 - Privacy: EXIF/GPS in uploaded media; client-side badges from untrusted Matrix state.
 - Matrix/chat: send failure states, queue retries (rare in this sample).
 
 
+## 17. Mergeability and workflow (not in the 2026-06…10 sample; 11% of human findings in 2026-10)
+- The branch merges into current `develop`, and neither `develop` nor an open sibling PR removes a
+  symbol this PR uses (or the reverse). A clean textual merge can still fail `dart analyze`. State the
+  merge order when two app PRs depend on each other.
+- Feature work has a ticket key; a new Remote Config flag has a removal ticket; the CLAUDE.md lists
+  of current flags, Remote Config keys and RevenueCat call sites are updated.
+- Plugin, CLI and platform behaviour is cited from the source of the resolved version. Wrong
+  Blockings came from remembered behaviour (`image_picker_ios` PHPicker, Codemagic CLI credentials).
+
 ## Do not report
+- PRs into `main`, `release/* → develop` back-merges, and heads that only merge the base (`bb.py
+  prepare` skips them).
+- What CI fails on by itself: see known-drift "CI gates".
 - Legacy patterns in untouched code (see known-drift.md): raw colours and `ThemeColors` elsewhere,
   long comments elsewhere, `getIt` in widgets without an existing cubit, `data/` importing
   `domain/` entities, imports from `lib/common` in existing files, Riverpod remnants.
@@ -198,6 +220,7 @@ highest.
 - Product or design choices that match Figma but not the ticket wording: `question` at most.
 - Speculative "could be slow" without a concrete hot path or measured size.
 - Asking for a lock file change: `pubspec.lock` is gitignored.
-- ARB housekeeping the pre-commit hook owns: a missing `description`, `@key` blocks on keys without
-  placeholders, blank lines or escapes in ARB files. Only placeholder metadata matters (section 9).
+- ARB housekeeping the pre-commit hook or the guard owns: `@key` placement, a missing `description`,
+  blank lines or escapes in ARB files.
+- A deploy-order hold the description already states ("merge after core #N").
 - A `TODO` without a ticket reference.

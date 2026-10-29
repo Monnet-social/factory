@@ -21,13 +21,17 @@ file is missing, continue without it and say so in `notes`.
 | `pr/diff.patch` | `git diff base..head` of the PR |
 | `pr/files.txt` | changed files with status |
 | `pr/precheck.json` | deterministic findings from `checks/precheck_app.py` (`findings`) and context for you (`info`, never a finding by itself) |
-| `pr/prior-review.json` | your earlier comments on this PR: inline findings (`kind: finding`) and summaries (`kind: summary`, they hold the nits and file-level items), each with `id`, `path`, `line`, `text` and the developers' `replies`, `votes`, `resolved` (empty list on the first review) |
+| `pr/prior-review.json` | earlier comments on this PR: your inline findings (`kind: finding`) and summaries (`kind: summary`, they hold the nits and file-level items), each with `id`, `path`, `line`, `text` and the developers' `replies`, `votes`, `resolved`; and the reviewers' own top-level comments (`kind: human`, with `author`, `replies`; long pasted reviews are cut at 2,000 characters). Empty list on the first review |
+| `pr/REVIEW.md` | the repository's review instructions from the PR's **target branch** (`develop` for a stack cut before the file existed); absent until the repository has one |
 | `app/` | the app repository tree at the PR head |
 | `core/` | monnett-core (Java/Quarkus backend) on `develop`, read-only context for the API contract (may be absent) |
 
 ## Procedure
 
-1. **Rules.** Read `app/CLAUDE.md` (the rules as of this PR) and
+1. **Rules.** Read `pr/REVIEW.md` first when it exists: it is the team's standard for scope,
+   severity, evidence, what to always check, what not to report and how many findings to keep. Where
+   the rubric or known-drift below disagrees with it, `pr/REVIEW.md` wins. Then read `app/CLAUDE.md`
+   (the rules as of this PR) and
    [references/known-drift.md](references/known-drift.md) (where CLAUDE.md is stale, legitimate
    exceptions, legacy patterns not to report). Read [references/rubric.md](references/rubric.md)
    once fully. When the PR touches `lib/l10n/`, also read `app/lib/l10n/README.md`.
@@ -52,7 +56,9 @@ file is missing, continue without it and say so in `notes`.
    resource/DTO in `core/` (Grep the path or the snake_case key under `core/src/main/java`) and check
    key names, nullability, envelope keys, id types and enum strings. A key that does not exist on core
    `develop` is a merge/deploy-order problem: `blocking` if the PR targets `develop`, otherwise
-   `question`. If `core/` is absent, say so in `notes` and raise contract doubts as `question`.
+   `question`. Exceptions: when the description already holds the merge on a core PR ("merge after
+   core #N"), report nothing; when it names a core PR branch you cannot see, ask a `question`. If
+   `core/` is absent, say so in `notes` and raise contract doubts as `question`.
 5. **Rubric pass.** Apply the rubric sections in order. Only for added/changed lines; a legacy
    problem merely visible in context is out of scope unless the PR makes it worse or depends on it.
 6. **Test pass.** For every new or changed test ask: *would this test fail if the production change
@@ -66,10 +72,13 @@ file is missing, continue without it and say so in `notes`.
 8. **Pre-checks.** Read `pr/precheck.json`. Keep each finding that is correct; drop the ones that are
    false positives in this context and list them in `dropped_prechecks`. Checks marked
    "the LLM must confirm" in the message (`context-after-await`, `dto-default`,
-   `hardcoded-ui-string`, `tests-missing`, `arb-dead-key`) are leads: verify each in the code before
+   `tests-missing`) are leads: verify each in the code before
    keeping it. Do not repeat a pre-check finding as a separate LLM finding.
-9. **Prior review.** Read `pr/prior-review.json`. For every candidate finding, check whether an earlier
-   finding or summary item raised the same problem, even with other wording or at another line. If so, set
+9. **Prior review.** Read `pr/prior-review.json`. First the `kind: human` items: a problem a reviewer
+   already raised, or a trade-off agreed in their thread, is settled. Set `prior_id` to that comment's `id`
+   (the poster never posts it) and leave it out of `summary`. Then, for every candidate finding, check
+   whether an earlier AI finding or summary item raised the same problem, even with other wording or at
+   another line. If so, set
    `prior_id` to that earlier `id` (the summary's `id` for a nit or file-level item) and apply these rules:
    - The thread has a reply or is resolved → the developer answered it. Keep the finding only with
      `prior_id` set (the poster then does not repeat it). Do not raise the same point again under a
@@ -100,15 +109,20 @@ file is missing, continue without it and say so in `notes`.
 - Each finding: one problem, `path:line` in the PR head (`app/`-relative path, without the `app/`
   prefix), a concrete scenario (user action / input / state → wrong result), and a concrete fix.
   Quote at most 3 lines of code.
-- Severity as the team uses it (reviewers write "Blocker", "Should fix", "Non-blocking", "Nit"):
+- Severity and volume as `pr/REVIEW.md` defines them ("Severity", "Volume"). Without that file:
   - `blocking`: crash or red screen, data or session leak between accounts, privacy/security, a
     broken backend contract or deploy order, a regression of existing behaviour, or an explicit AC.
-  - `should`: real defect risk or a CLAUDE.md rule break in new code; fix before merge expected.
-  - `nit`: style or small clarity issue. At most 5 nits; group minor ones into one finding.
-  - `question`: you need the author's intent to decide (AC ambiguity, Figma vs ticket). Use sparingly.
-- At most 15 findings. If you have more, keep the most severe.
+    Only with evidence you traced in `app/`, `core/` or the plugin source; a claim from remembered
+    plugin, CLI or API behaviour is a `question` with the check to run. Never "likely".
+  - `should`: a real defect with a user-visible scenario, or a CLAUDE.md rule break in new code. A
+    user-visible defect is never a `nit`.
+  - `nit`: wording, naming, style with no user-visible effect. At most 5, posted in the summary.
+  - `question`: code, ticket and description cannot answer it. At most 2.
+- At most 10 findings besides nits. If you have more, keep the most severe.
 - No finding about code the PR did not touch, about formatting, about analyzer infos CI does not gate
   (unless they hide a real defect), or about matters the rubric lists as "do not report".
+- Do not report what CI fails on by itself (`hardcoded_string` in widget arguments, every ARB guard
+  rule, naming, analyzer errors, failing tests); `pr/precheck.json` lists such hits under `info`.
 - You cannot run the app, `flutter analyze` or the tests. Do not claim you did. When a finding depends
   on runtime behaviour (layout at a text scale, platform plugin behaviour), state the reasoning and
   use `confidence: "medium"` unless the code makes it certain.

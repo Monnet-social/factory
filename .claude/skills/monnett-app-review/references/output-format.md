@@ -36,12 +36,12 @@ Write one JSON object to the output file (default `review.json` in the workspace
 |---|---|
 | `verdict` | `approve` (no findings), `approve_with_nits` (only nit/question), `changes_requested` (any blocking/should) |
 | `severity` | `blocking`, `should`, `nit`, `question` |
-| `category` | `correctness`, `tests`, `docs-deadcode`, `state`, `ui-a11y`, `async-lifecycle`, `api-contract`, `ac-scope`, `l10n`, `platform`, `navigation`, `layering`, `duplication`, `error-handling`, `performance`, `theming`, `leaks`, `flags-config`, `deps`, `logging`, `analytics`, `privacy-security` |
+| `category` | `correctness`, `tests`, `docs-deadcode`, `state`, `ui-a11y`, `async-lifecycle`, `api-contract`, `ac-scope`, `l10n`, `platform`, `navigation`, `layering`, `duplication`, `error-handling`, `performance`, `theming`, `leaks`, `flags-config`, `deps`, `logging`, `analytics`, `privacy-security`, `merge`, `workflow` |
 | `path` | path relative to the app repository root (e.g. `lib/…`, `test/…`), no `app/` prefix |
 | `line` | line number in the PR head version of the file; `null` for file-level findings |
 | `confidence` | `high` or `medium` |
 | `source` | `llm` or `precheck:<check-id>` (kept pre-check findings, wording may be improved) |
 | `fixed_prior` | earlier `kind: finding` items from `pr/prior-review.json` that the PR head fixes completely, each with one line of evidence; their threads are resolved. Empty on a first review |
-| `prior_id` | `id` of the earlier finding or summary in `pr/prior-review.json` that raised the same problem, else `null`. Findings with a `prior_id` are never posted again |
+| `prior_id` | `id` of the earlier finding, summary or human comment (`kind: human`) in `pr/prior-review.json` that raised the same problem, else `null`. Findings with a `prior_id` are never posted again |
 
 `body` ≤ 6 lines, Markdown allowed, no headings. Findings ordered by severity, then file.

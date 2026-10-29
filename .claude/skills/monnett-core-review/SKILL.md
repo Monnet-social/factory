@@ -21,16 +21,23 @@ file is missing, continue without it and say so in `summary`.
 | `pr/diff.patch` | `git diff base..head` of the PR |
 | `pr/files.txt` | changed files with status |
 | `pr/precheck.json` | deterministic findings from `checks/precheck.py` |
-| `pr/prior-review.json` | your earlier comments on this PR: inline findings (`kind: finding`) and summaries (`kind: summary`, they hold the nits and file-level items), each with `id`, `path`, `line`, `text` and the developers' `replies`, `votes`, `resolved` (empty list on the first review) |
+| `pr/prior-review.json` | earlier comments on this PR: your inline findings (`kind: finding`) and summaries (`kind: summary`, they hold the nits and file-level items), each with `id`, `path`, `line`, `text` and the developers' `replies`, `votes`, `resolved`; and the reviewers' own top-level comments (`kind: human`, with `author`, `replies`; long pasted reviews are cut at 2,000 characters). Empty list on the first review |
+| `pr/REVIEW.md` | the repository's review instructions from the PR's **target branch** (`develop` for a stack cut before the file existed); absent until the repository has one |
 | `core/` | the repository tree at the PR head (no git history) |
 
 ## Procedure
 
-1. **Rules.** Read `core/CLAUDE.md` (the rules as of this PR) and
-   [references/known-drift.md](references/known-drift.md) (where CLAUDE.md is stale and which legacy
-   patterns not to report). Read [references/rubric.md](references/rubric.md) once fully.
+1. **Rules.** Read `pr/REVIEW.md` first when it exists: it is the team's standard for scope,
+   severity, evidence, what to always check, what not to report and how many findings to keep. Where
+   the rubric or known-drift below disagrees with it, `pr/REVIEW.md` wins. Then read `core/CLAUDE.md`
+   (the rules as of this PR), the review sections of `core/.claude/skills/core-clean-code/SKILL.md`
+   (§ 1, § 2, § 6) and `core/.claude/skills/core-architecture/SKILL.md` (§ 1 for a new cross-feature
+   write or entity, § 3, § 5, § 7), [references/known-drift.md](references/known-drift.md) (where
+   CLAUDE.md is stale and which legacy patterns not to report), and
+   [references/rubric.md](references/rubric.md) once fully.
 2. **Intent.** Read `pr/meta.json`, `pr/jira.md`, `pr/files.txt`. Write down for yourself: what the PR
-   claims to do, the AC list, which layers it touches. If the diff adds or edits an `spdd/` canvas,
+   claims to do, the AC list, which layers it touches, and every decision or follow-up ticket the
+   description or ticket names (a named decision is not a defect). If the diff adds or edits an `spdd/` canvas,
    read it — it is the spec.
 3. **Read the change.** Go through `pr/diff.patch` file by file. For each non-trivial hunk open the
    surrounding code in `core/` and the callers/callees you need (Grep). Changed read paths: find every
@@ -45,8 +52,11 @@ file is missing, continue without it and say so in `summary`.
 7. **Pre-checks.** Read `pr/precheck.json`. Keep each finding that is correct (they are mechanical and
    usually right); drop the ones that are false positives in this context. Do not repeat a pre-check
    finding as a separate LLM finding.
-8. **Prior review.** Read `pr/prior-review.json`. For every candidate finding, check whether an earlier
-   finding or summary item raised the same problem, even with other wording or at another line. If so, set
+8. **Prior review.** Read `pr/prior-review.json`. First the `kind: human` items: a problem a reviewer
+   already raised, or a trade-off agreed in their thread, is settled. Set `prior_id` to that comment's `id`
+   (the poster never posts it) and leave it out of `summary`. Then, for every candidate finding, check
+   whether an earlier AI finding or summary item raised the same problem, even with other wording or at
+   another line. If so, set
    `prior_id` to that earlier `id` (the summary's `id` for a nit or file-level item) and apply these rules:
    - The thread has a reply or is resolved → the developer answered it. Keep the finding only with
      `prior_id` set (the poster then does not repeat it). Do not raise the same point again under a
@@ -75,20 +85,24 @@ file is missing, continue without it and say so in `summary`.
 - English. No praise, no restating what the PR does, no generic advice ("consider adding tests").
 - Each finding: one problem, `path:line` in the PR head, a concrete scenario (input/state → wrong
   result), and a concrete fix. Quote at most 3 lines of code.
-- Severity as the team uses it:
-  - `blocking` — breaks production, data, security/privacy, Flyway startup, the API contract, or an
-    explicit AC.
-  - `should` — real defect risk or a CLAUDE.md rule break in new code; fix before merge expected.
-  - `nit` — style or small clarity issue. At most 5 nits; group minor ones into one finding.
-  - `question` — you need the author's intent to decide (e.g. AC ambiguity). Use sparingly.
-- At most 15 findings. If you have more, keep the most severe.
+- Severity and volume as `pr/REVIEW.md` defines them ("Severity", "Volume"). Without that file:
+  - `blocking`: breaks production start-up, loses or corrupts data, leaks data across the block or
+    visibility rules, breaks a privacy or legal obligation (GDPR objection, analytics disclosure),
+    breaks a wire contract the released app reads, breaks a rolling deploy, or an explicit AC with no
+    recorded decision.
+  - `should`: a real defect with a concrete failing scenario, or a CLAUDE.md or skill rule break in
+    new code.
+  - `nit`: small clarity issue. At most 5, posted in the summary.
+  - `question`: you need the author's intent and the description and ticket do not give it. At most 3.
+- At most 10 findings besides nits. If you have more, keep the most severe.
 - No finding about code the PR did not touch, about formatting, or about matters the rubric lists as
   "do not report".
 - **Do not self-censor.** Pre-existing code is in scope when the PR makes it matter more: it becomes
   the only source of a value, gains new callers, or the PR copies its pattern. A placeholder or
   hardcoded value the PR ships (`verified(false)`, a fixed time zone, a `default` branch) is a
-  finding (`question` if you need intent). If you noticed a concern and are unsure, report it as
-  `question` with `confidence: "medium"` rather than dropping it silently.
+  finding (`question` if you need intent). If you noticed a concern and are unsure, check the
+  description, the ticket and the named follow-ups first; if they do not settle it, report it as
+  `question` with `confidence: "medium"` within the question cap.
 - If the PR is clean, return an empty `findings` list and say so in one line. That is a valid result.
 
 ## Safety
