@@ -77,8 +77,10 @@ Check every new/changed test:
   `WHERE` that excludes rows already updated).
 - `UPDATE`/`DELETE` without `WHERE` in one transaction over big tables; data backfills batched.
 - Index matches the query expression (`LOWER(x)`, trigram `gin_trgm_ops` for `LIKE '%…%'`, column
-  order for the `WHERE`/`ORDER BY`); plain `CREATE INDEX` on big tables locks writes (precedent for
-  `CONCURRENTLY`: V0009, V0014).
+  order for the `WHERE`/`ORDER BY`). The repo norm is plain `CREATE INDEX` inside Flyway's
+  transaction (V0009, V0014, V0018, V0020 explain why). Never advise `CONCURRENTLY`: it fails inside
+  the transaction and the repo has no non-transactional migration. A large hot table is at most a
+  `question` about the table size or a separate non-transactional migration.
 - Entity mapping matches the migration (types, nullability, enum values incl. Postgres enum types).
 - Rolling deploy: old pods keep running during a deploy. A dropped or renamed column or table that
   old code still reads is `blocking` unless the PR is the second step of a two-step change. New
