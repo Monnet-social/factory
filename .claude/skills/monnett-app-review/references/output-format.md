@@ -25,6 +25,12 @@ Write one JSON object to the output file (default `review.json` in the workspace
   "fixed_prior": [
     {"prior_id": 879004468, "evidence": "`if (!context.mounted) return;` added after the await in `lib/presentation/screens/settings/settings_screen.dart:118`."}
   ],
+  "merge": {
+    "confidence": 55,
+    "reason": "One line: what a human should look at first.",
+    "flag_gated": false,
+    "flag_evidence": ""
+  },
   "dropped_prechecks": [
     {"check": "context-after-await", "path": "…", "reason": "the caller checks mounted before this callback runs"}
   ],
@@ -42,6 +48,8 @@ Write one JSON object to the output file (default `review.json` in the workspace
 | `confidence` | `high` or `medium` |
 | `source` | `llm` or `precheck:<check-id>` (kept pre-check findings, wording may be improved) |
 | `fixed_prior` | earlier `kind: finding` items from `pr/prior-review.json` that the PR head fixes completely, each with one line of evidence; their threads are resolved. Empty on a first review |
+| `merge` | `confidence` 0–100: your estimate that a human finds no blocking or should-fix problem this review missed (the poster caps it); `reason` one line; `flag_gated` and `flag_evidence` (`path:line`) only for a `ui-candidate` PR in `pr/risk.json` |
+| `accepted` | optional, on a kept `blocking` finding with `prior_id`: `true` when another human reviewer accepted the author's reply |
 | `prior_id` | `id` of the earlier finding, summary or human comment (`kind: human`) in `pr/prior-review.json` that raised the same problem, else `null`. Findings with a `prior_id` are never posted again |
 
 `body` ≤ 6 lines, Markdown allowed, no headings. Findings ordered by severity, then file.

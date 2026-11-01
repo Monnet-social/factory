@@ -10,7 +10,7 @@ Design and decisions: `monnett-team/wiki/ai-code-review.md`, `ai-code-review-app
 | `.claude/skills/monnett-app-review/` | Same for the Flutter app (rubric from 255 comments); reads core `develop` for the API contract |
 | `checks/precheck.py` | Deterministic diff-scoped checks: Flyway timestamp names (MNT-1034; a new `V00NN__` is blocking), edits of applied migrations, idempotency, endpoint security/OpenAPI, Bruno, `.env.example`, AppConfigTest, internal mocks, test `@Transactional`, layering imports, nested types, listener catch, comment length |
 | `checks/precheck_app.py` | App pre-checks without the Flutter SDK (what CI gates itself, ARB guard rules and `hardcoded_string`, goes to `info` only): ARB placeholder order/metadata over every `intl_*.arb`, layer imports, flags, DTO tests/defaults, hardcoded strings, deprecated `ThemeColors` on added lines, context after await, dispose, pubspec |
-| `bitbucket/bb.py` | Routine side (`--repo`, per-repo config in `REPOS`, incl. a live gate): `prepare` (validate payload; skip drafts, PRs into `main`, back-merges into `develop` and heads whose PR diff is unchanged since a reviewed SHA; clone, diff, pre-checks, Jira, `REVIEW.md` from the target branch, AI and human threads → workspace), `post` (inline + summary comments, once per SHA even with concurrent runs; with nothing new it notes the re-check in the last summary instead of posting one; replies to and resolves earlier findings the reviewer verified as fixed), `feedback` (votes, replies and fixes per AI comment, with totals), `reply`/`reply-post` (a developer reply in an AI finding thread: answered questions and bare `wrong`/`noise` resolved without the LLM, explanations judged per `routine/REPLY.md`, at most one "still open" per thread) |
+| `bitbucket/bb.py` | Routine side (`--repo`, per-repo config in `REPOS`, incl. a live gate): `prepare` (validate payload; skip drafts, PRs into `main`, back-merges into `develop` and heads whose PR diff is unchanged since a reviewed SHA; clone, diff, pre-checks, Jira, `REVIEW.md` from the target branch, AI and human threads, risk class from the changed paths → workspace), `post` (inline + summary comments with a merge line, once per SHA even with concurrent runs; with nothing new it notes the re-check in the last summary instead of posting one; replies to and resolves earlier findings the reviewer verified as fixed), `feedback` (votes, replies and fixes per AI comment, with totals), `reply`/`reply-post` (a developer reply in an AI finding thread: answered questions and bare `wrong`/`noise` resolved without the LLM, explanations judged per `routine/REPLY.md`, at most one "still open" per thread) |
 | `jira/jira_issue.py` | Jira issue → Markdown (description, AC) |
 | `routine/PROMPT.md`, `PROMPT-app.md` | Routine prompts (API trigger: review `pr=… sha=…` or reply `reply pr=… comment=…`; shadow/live mode via `REVIEW_MODE` and the `REPOS` live gate) |
 | `routine/REPLY.md` | How the routine judges a developer's explanation in a finding thread (resolve or keep open once) |
@@ -20,11 +20,16 @@ Design and decisions: `monnett-team/wiki/ai-code-review.md`, `ai-code-review-app
 
 ## Workspace contract
 `bb.py prepare` (live) and `backtest/prepare.py` (replay) produce the same layout, which the skill reads:
-`pr/{meta.json, diff.patch, files.txt, precheck.json, jira.md, prior-review.json, REVIEW.md}` + `core/` or
+`pr/{meta.json, diff.patch, files.txt, precheck.json, jira.md, prior-review.json, REVIEW.md, risk.json}` + `core/` or
 `app/` (repo at PR head); app workspaces also get `core/` (monnett-core `develop`, read-only contract context).
 `prior-review.json` (earlier AI findings and human threads, with replies) exists only in live runs.
 `REVIEW.md` is the repository's review standard from the PR's target branch (falls back to `develop`), never
 from the PR; the skills prefer it over their own rubric (ADR 0005).
+`risk.json` is the risk class from the changed paths only (`LOW_PATHS`, `HIGH_PATHS` in `bb.py`). `post`
+recomputes it and writes the merge line: "safe to merge without a human review" only for a `low` PR (docs,
+tests, translations; in the app also a small widget-only change the reviewer shows is behind an unreleased
+flag) with no open blocking, should-fix or question and CI not failed; otherwise the reviewer's `confidence`,
+capped at 70 (standard), 40 (high or an open should-fix/question), 10 (open blocking or failed CI).
 
 ## Routine setup (pilot)
 1. Push this repo to GitHub; create the routine at claude.ai/code/routines with this repo, prompt

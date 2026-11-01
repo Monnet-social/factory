@@ -56,6 +56,37 @@ FEEDBACK = ("useful", "wrong", "noise")
 VOTE_RE = re.compile(r"^\W*(useful|wrong|noise)\b")  # the vote is the reply's first word; later words are prose
 HUMAN_TEXT_MAX = 2000  # pasted ad-hoc reviews run to pages; the opening says what the thread is about
 SEV_LABEL = {"blocking": "Blocking", "should": "Should fix", "nit": "Nit", "question": "Question"}
+# Merge readiness. The risk class comes from the changed paths, never from the LLM. Only a low-risk PR can get
+# "safe to merge"; every other PR gets the reviewer's confidence, capped by class, open findings and CI.
+LOW_PATHS = {
+    "monnett-core": r"\.md$|^docs/|^src/test/|^bruno/|^src/main/resources/i18n/",
+    "monnett-app": r"\.md$|^docs/|^test/|^integration_test/|^lib/l10n/[^/]+\.arb$|^ios/Runner/[^/]+\.lproj/[^/]+\.strings$",
+}
+HIGH_PATHS = {  # (pattern, reason, True = only when an existing file is changed, an added file does not count)
+    "monnett-core": [
+        (r"^src/main/resources/db/", "database migration", False),
+        (r"^src/main/resources/application[^/]*\.properties$|^k8s/|^\.ci/|^bitbucket-pipelines\.yml$|Dockerfile"
+         r"|\.gradle(\.kts)?$|^gradle/", "config, build or deploy", False),
+        (r"/(subscription|entitlement|referral)/|(?i:revenuecat|billing|payment)", "billing", False),
+        (r"/(security|auth|relationship|moderation|export)/|(?i:block|visibility|privacy|gdpr|objection|consent)",
+         "privacy, blocks or auth", False),
+        (r"/scheduled/|(?i:webhook|job|listener|async)", "async jobs, webhooks or listeners", False),
+        (r"/data/entities/", "data model", False),
+        (r"/api/v1/.*/dtos/", "existing API contract", True),
+    ],
+    "monnett-app": [
+        (r"^pubspec\.(yaml|lock)$|^ios/|^android/|^web/|^macos/|^packages/|^\.ci/|^\.githooks/"
+         r"|^bitbucket-pipelines\.yml$|codemagic", "dependencies, native code or CI", False),
+        (r"(?i:subscription|purchase|paywall|revenuecat|entitlement)", "billing", False),
+        (r"(?i:auth|session|logout|account|block|privacy)", "privacy, session or account", False),
+        (r"^lib/core/(init|router|deeplink|notifications|config|error)/|^lib/controllers/",
+         "start-up, navigation, push or sync", False),
+        (r"^lib/data/", "existing backend contract", True),
+    ],
+}
+UI_CANDIDATE = {"monnett-app": r"^lib/presentation/(?!bloc/)"}  # widgets only, no Cubits; low only behind an unreleased flag
+UI_CANDIDATE_MAX_LINES = 200
+CONFIDENCE_CAP = {"low": 70, "standard": 70, "high": 40}
 
 
 def auth_header():
@@ -226,6 +257,79 @@ def open_pr_migrations(exclude):
     return out
 
 
+def diff_entries(pr):
+    """(status, path, changed lines) per file of the PR diff; a rename is listed under both paths."""
+    out = []
+    for d in paged(f"/pullrequests/{pr}/diffstat?pagelen=500"):
+        lines = (d.get("lines_added") or 0) + (d.get("lines_removed") or 0)
+        paths = {x["path"] for x in (d.get("old"), d.get("new")) if x}
+        out += [(d["status"], path, lines) for path in sorted(paths)]
+    return out
+
+
+def risk_class(entries):
+    """low | ui-candidate | standard | high, with reasons. Decided by paths only."""
+    if not entries:
+        return {"class": "standard", "reasons": ["empty diff"]}
+    low = LOW_PATHS.get(REPO)
+    reasons = []
+    for status, path, _ in entries:
+        if low and re.search(low, path):  # tests and docs never raise the class
+            continue
+        for pat, why, existing_only in HIGH_PATHS.get(REPO, []):
+            if re.search(pat, path) and not (existing_only and status == "added") and why not in reasons:
+                reasons.append(why)
+    if reasons:
+        return {"class": "high", "reasons": reasons}
+    rest = {p: n for _, p, n in entries if not (low and re.search(low, p))}
+    if not rest:
+        return {"class": "low", "reasons": ["docs, tests or translations only"]}
+    ui = UI_CANDIDATE.get(REPO)
+    if ui and all(re.search(ui, p) for p in rest) and sum(rest.values()) <= UI_CANDIDATE_MAX_LINES:
+        return {"class": "ui-candidate", "reasons": ["small presentation-only change: low if behind an unreleased flag"]}
+    return {"class": "standard", "reasons": []}
+
+
+def ci_state(pr, sha):
+    """green | pending | failed | unknown for the builds reported on this head."""
+    states = [s["state"] for s in paged(f"/pullrequests/{pr}/statuses?pagelen=100")
+              if (s.get("commit") or {}).get("hash", "")[:12] == sha[:12]]
+    if not states:
+        return "unknown"
+    if any(x in ("FAILED", "STOPPED") for x in states):
+        return "failed"
+    return "green" if all(x == "SUCCESSFUL" for x in states) else "pending"
+
+
+def merge_line(rv, risk, open_findings, ci):
+    """One line for the summary: 'safe to merge' for a clean low-risk PR, else the capped confidence."""
+    m = rv.get("merge") or {}
+    cls = risk["class"]
+    if cls == "ui-candidate":
+        cls = "low" if m.get("flag_gated") is True and str(m.get("flag_evidence") or "").strip() else "standard"
+    sev = {f["severity"] for f in open_findings}
+    if cls == "low" and not sev & {"blocking", "should", "question"} and ci in ("green", "pending"):
+        what = (risk["reasons"][0] if risk["class"] == "low"
+                else f"UI behind an unreleased flag, `{str(m['flag_evidence']).strip()}`")
+        when = "" if ci == "green" else " once CI is green"
+        return (f"**Merge:** safe to merge without a human review{when}. Low-risk change ({what}); "
+                "no open blocking, should-fix or question.")
+    cap = CONFIDENCE_CAP[cls]
+    if "blocking" in sev or ci == "failed":
+        cap = min(cap, 10)
+    elif sev & {"should", "question"}:
+        cap = min(cap, 40)
+    try:
+        conf = max(0, min(int(m.get("confidence")), cap))
+    except (TypeError, ValueError):
+        conf = cap // 2
+    kind = {"low": "Low-risk change with open findings", "standard": "Standard-risk change",
+            "high": f"High-risk change ({', '.join(risk['reasons'])})"}[cls]
+    why = (str(m.get("reason") or "").strip().splitlines() or [""])[0][:300]
+    return (f"**Merge confidence:** {conf}%; a human review is needed. {kind}."
+            + (f" {why}" if why else "") + (" CI failed." if ci == "failed" else ""))
+
+
 def prepare(a):
     if not re.fullmatch(r"\d{1,6}", str(a.pr)) or not re.fullmatch(r"[0-9a-f]{7,40}", a.sha):
         print("SKIP invalid payload")
@@ -263,6 +367,7 @@ def prepare(a):
     open(p("diff.patch"), "w").write(sh("git", "diff", "-M", base, full_head, cwd=checkout))
     open(p("files.txt"), "w").write(sh("git", "diff", "-M", "--name-status", base, full_head, cwd=checkout))
     json.dump(open_pr_migrations(pr["id"]) if cfg["flyway"] else [], open(p("open-migrations.json"), "w"))
+    json.dump(risk_class(diff_entries(pr["id"])), open(p("risk.json"), "w"), indent=1)
     prior = list(ai_threads(comments).values()) + list(human_threads(comments).values())
     json.dump(prior, open(p("prior-review.json"), "w"), indent=1, ensure_ascii=False)
     rules, ref = review_rules(checkout, dest)
@@ -348,11 +453,14 @@ def post(a):
             pass
         # a thread the developer answered or resolved is theirs to close; the bot never repeats it
         (new if t is None else answered if t["replies"] or t["resolved"] else carried).append(f)
+    # open: everything new or still unanswered, plus a Blocking point answered only by its author
+    open_findings = new + carried + [f for f in answered if f["severity"] == "blocking" and f.get("accepted") is not True]
+    merge = merge_line(rv, risk_class(diff_entries(a.pr)), open_findings, ci_state(a.pr, a.sha))
     inline = [f for f in new if f["severity"] in ("blocking", "should", "question") and f.get("path") and f.get("line")]
     rest = [f for f in new if f not in inline]
     counts = {s: sum(1 for f in new if f["severity"] == s) for s in SEV_LABEL}
     lines = [f"**AI review** (`{a.sha[:12]}`): " + ", ".join(f"{n} {SEV_LABEL[s].lower()}{'s' if n > 1 and s in ('nit', 'question') else ''}" for s, n in counts.items() if n)
-             if new else f"**AI review** (`{a.sha[:12]}`): no new findings.", "", rv.get("summary", "")]
+             if new else f"**AI review** (`{a.sha[:12]}`): no new findings.", "", merge, "", rv.get("summary", "")]
     if rest:
         lines += ["", *[f"- **{SEV_LABEL.get(f['severity'])}** `{f.get('path') or ''}{':' + str(f['line']) if f.get('line') else ''}` "
                         f"{f['title']}: {f['body']}" for f in rest]]
@@ -369,7 +477,7 @@ def post(a):
     last = max((t for t in threads.values() if t["kind"] == "summary"), key=lambda t: t["id"], default=None)
     if not new and not fixed and last:  # nothing to say: note the re-check in the last summary, no new comment
         raw = next(c["content"]["raw"] for c in comments if c["id"] == last["id"])
-        recheck = f"{raw}\n\nRe-checked at `{a.sha[:12]}`: no new findings.\n\n{MARKER.format(sha=a.sha[:12])}"
+        recheck = f"{raw}\n\nRe-checked at `{a.sha[:12]}`: no new findings. {merge}\n\n{MARKER.format(sha=a.sha[:12])}"
         if not is_live(a.dry_run):
             print(json.dumps({"edit_summary": last["id"], "text": recheck}, indent=1, ensure_ascii=False))
             return

@@ -23,6 +23,7 @@ file is missing, continue without it and say so in `notes`.
 | `pr/precheck.json` | deterministic findings from `checks/precheck_app.py` (`findings`) and context for you (`info`, never a finding by itself) |
 | `pr/prior-review.json` | earlier comments on this PR: your inline findings (`kind: finding`) and summaries (`kind: summary`, they hold the nits and file-level items), each with `id`, `path`, `line`, `text` and the developers' `replies`, `votes`, `resolved`; and the reviewers' own top-level comments (`kind: human`, with `author`, `replies`; long pasted reviews are cut at 2,000 characters). Empty list on the first review |
 | `pr/REVIEW.md` | the repository's review instructions from the PR's **target branch** (`develop` for a stack cut before the file existed); absent until the repository has one |
+| `pr/risk.json` | risk class from the changed paths: `low`, `ui-candidate`, `standard` or `high`, with `reasons`. Set by `bb.py`; you cannot change it |
 | `app/` | the app repository tree at the PR head |
 | `core/` | monnett-core (Java/Quarkus backend) on `develop`, read-only context for the API contract (may be absent) |
 
@@ -86,7 +87,8 @@ file is missing, continue without it and say so in `notes`.
      factually wrong, say so in `notes` only.
    - Exception: a `blocking` finding answered only by its author, not fixed in the head and not
      accepted by another human reviewer in the thread, stays open. Keep it with `prior_id` set and
-     name it in `summary` as an open Blocking point with its thread `id`.
+     name it in `summary` as an open Blocking point with its thread `id`. If another human reviewer
+     accepted it in the thread, set `"accepted": true` on the kept finding.
    - The developer fixed it in part → report only the part that is still wrong, and only if their
      reply does not already explain why that part stays. That remaining part is a new finding
      without `prior_id`.
@@ -102,7 +104,19 @@ file is missing, continue without it and say so in `notes`.
    `clearUserScopedState()`), a test that covers it, a caller that cannot produce the input. Keep it
    only if it survives. Mark `confidence: "high"` when you traced the path end to end, `"medium"` when
    one link is inferred. Drop anything lower.
-11. **Write** the result to the output file you were given (default `review.json` in the workspace)
+11. **Merge readiness.** Fill `merge` (see the output format). The poster decides the line it posts: a
+   `low` PR with no open blocking, should-fix or question gets "safe to merge without a human review";
+   every other PR gets your `confidence`, capped at 70 (`standard`), 40 (`high`), 40 with an open
+   should-fix or question, 10 with an open blocking point or failed CI. `confidence` is your estimate, 0
+   to 100, that a human reviewer would find no blocking or should-fix problem this review missed. The
+   reviewer finds about half of what humans find; it is weakest at Cubit state and async races, platform
+   and plugin behaviour, deep correctness, performance. Lower the number for each such area the PR
+   touches, for code paths you could not trace (plugins, vendors, other repos) and for a large diff.
+   `reason`: one line naming what a human should look at first. For a `ui-candidate` PR set `flag_gated:
+   true` only when every new or changed UI path is reachable only behind an unreleased flag
+   (`kDebugMode` or a `FeatureFlags` value that is off in release), with `flag_evidence` as `path:line`
+   of the gate; a bug fix to released UI is never flag-gated.
+12. **Write** the result to the output file you were given (default `review.json` in the workspace)
    using the schema in [references/output-format.md](references/output-format.md). Then print one
    line: `REVIEW WRITTEN <n findings>`.
 
