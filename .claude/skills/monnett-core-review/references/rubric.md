@@ -17,7 +17,8 @@ Check every new/changed test:
   only for large permutation matrices or unreachable paths.
 - No mocks of internal beans (repositories, services, `EventPublisher`, `SubscriptionGate`, …).
   Allowed: `AsyncJobScheduler`, external services via `testdoubles/`.
-- No `@Transactional` on test methods outside repository-only tests (CLAUDE.md "Testing"); DB tests
+- `@Transactional` on tests as CLAUDE.md "Testing" says: never on RestAssured resource tests, otherwise
+  only when necessary (repository-only tests are fine); DB tests
   call `cleaner.reset()` in `@BeforeEach`; fixtures via `TestEntityUtils`.
 - Tests do not depend on the order in which other tests run (shared rows, static state, clocks).
 - A finding about an internal mock names the existing double to use (`testdoubles/`, see known-drift).

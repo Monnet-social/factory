@@ -84,6 +84,9 @@ file is missing, continue without it and say so in `notes`.
      `prior_id` set (the poster then does not repeat it). Do not raise the same point again under a
      new title, do not argue with the reply, and leave it out of `summary`. If you think the reply is
      factually wrong, say so in `notes` only.
+   - Exception: a `blocking` finding answered only by its author, not fixed in the head and not
+     accepted by another human reviewer in the thread, stays open. Keep it with `prior_id` set and
+     name it in `summary` as an open Blocking point with its thread `id`.
    - The developer fixed it in part → report only the part that is still wrong, and only if their
      reply does not already explain why that part stays. That remaining part is a new finding
      without `prior_id`.
@@ -117,8 +120,10 @@ file is missing, continue without it and say so in `notes`.
   - `should`: a real defect with a user-visible scenario, or a CLAUDE.md rule break in new code. A
     user-visible defect is never a `nit`.
   - `nit`: wording, naming, style with no user-visible effect. At most 5, posted in the summary.
-  - `question`: code, ticket and description cannot answer it. At most 2.
-- At most 10 findings besides nits. If you have more, keep the most severe.
+  - `question`: code, ticket and description cannot answer it. At most 3.
+- At most 10 findings besides nits. If you have more, keep the most severe and give the number left
+  out in `summary` ("2 more should-fix not shown"). On a later review, a finding the cap left out
+  may be reported even in unchanged lines.
 - No finding about code the PR did not touch, about formatting, about analyzer infos CI does not gate
   (unless they hide a real defect), or about matters the rubric lists as "do not report".
 - Do not report what CI fails on by itself (`hardcoded_string` in widget arguments, every ARB guard
