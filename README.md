@@ -30,6 +30,10 @@ recomputes it and writes the merge line: "safe to merge without a human review" 
 tests, translations; in the app also a small widget-only change the reviewer shows is behind an unreleased
 flag) with no open blocking, should-fix or question and CI not failed; otherwise the reviewer's `confidence`,
 capped at 70 (standard), 40 (high or an open should-fix/question), 10 (open blocking or failed CI).
+"Safe" needs CI passed: posted before CI finishes, the line says CI has not passed yet. `CLAUDE.md`,
+`REVIEW.md`, `AGENTS.md` and `.claude/` are `high` ("review rules"): the reviewer never rates a change to its
+own rules. An author-only reply never closes a Blocking point; a thread resolved by someone other than the
+author, or a reply the reviewer marks `accepted`, does.
 
 ## Routine setup (pilot)
 1. Push this repo to GitHub; create the routine at claude.ai/code/routines with this repo, prompt

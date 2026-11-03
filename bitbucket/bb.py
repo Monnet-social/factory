@@ -62,6 +62,8 @@ LOW_PATHS = {
     "monnett-core": r"\.md$|^docs/|^src/test/|^bruno/|^src/main/resources/i18n/",
     "monnett-app": r"\.md$|^docs/|^test/|^integration_test/|^lib/l10n/[^/]+\.arb$|^ios/Runner/[^/]+\.lproj/[^/]+\.strings$",
 }
+# the reviewer's own rules: a PR that edits them is never rated by the rules it edits
+RULE_PATHS = r"(^|/)(CLAUDE|REVIEW|AGENTS)\.md$|^\.claude/"
 HIGH_PATHS = {  # (pattern, reason, True = only when an existing file is changed, an added file does not count)
     "monnett-core": [
         (r"^src/main/resources/db/", "database migration", False),
@@ -166,6 +168,7 @@ def ai_threads(comments):
         out[c["id"]] = {"id": c["id"], "kind": kind, "path": inline.get("path"), "line": inline.get("to") or inline.get("from"),
                         "outdated": bool(inline.get("outdated")), "created_on": c.get("created_on"),
                         "text": re.sub(r"\[//\]: # \(monnett-ai-[^)]*\)", "", raw).strip(), "resolved": bool(c.get("resolution")),
+                        "resolved_by": ((c.get("resolution") or {}).get("user") or {}).get("display_name"),
                         "fixed_in": fixed_in(comments, c["id"]),
                         "votes": votes_of(replies),
                         "replies": [{"author": r["user"]["display_name"], "text": r["content"]["raw"]} for r in replies]}
@@ -274,6 +277,10 @@ def risk_class(entries):
     low = LOW_PATHS.get(REPO)
     reasons = []
     for status, path, _ in entries:
+        if re.search(RULE_PATHS, path):
+            if "review rules" not in reasons:
+                reasons.append("review rules")
+            continue
         if low and re.search(low, path):  # tests and docs never raise the class
             continue
         for pat, why, existing_only in HIGH_PATHS.get(REPO, []):
@@ -308,12 +315,15 @@ def merge_line(rv, risk, open_findings, ci):
     if cls == "ui-candidate":
         cls = "low" if m.get("flag_gated") is True and str(m.get("flag_evidence") or "").strip() else "standard"
     sev = {f["severity"] for f in open_findings}
-    if cls == "low" and not sev & {"blocking", "should", "question"} and ci in ("green", "pending"):
+    if cls == "low" and not sev & {"blocking", "should", "question"} and ci != "failed":
         what = (risk["reasons"][0] if risk["class"] == "low"
                 else f"UI behind an unreleased flag, `{str(m['flag_evidence']).strip()}`")
-        when = "" if ci == "green" else " once CI is green"
-        return (f"**Merge:** safe to merge without a human review{when}. Low-risk change ({what}); "
-                "no open blocking, should-fix or question.")
+        if ci == "green":
+            return (f"**Merge:** safe to merge without a human review. Low-risk change ({what}); "
+                    "no open blocking, should-fix or question; CI passed.")
+        # posted before CI finished: "safe" only when CI has passed, never on "not failed"
+        return (f"**Merge:** CI has not passed yet. Low-risk change ({what}); no open blocking, should-fix or "
+                "question: no human review is needed if CI passes.")
     cap = CONFIDENCE_CAP[cls]
     if "blocking" in sev or ci == "failed":
         cap = min(cap, 10)
@@ -323,7 +333,7 @@ def merge_line(rv, risk, open_findings, ci):
         conf = max(0, min(int(m.get("confidence")), cap))
     except (TypeError, ValueError):
         conf = cap // 2
-    kind = {"low": "Low-risk change with open findings", "standard": "Standard-risk change",
+    kind = {"low": "Low-risk change with open findings" if sev else "Low-risk change", "standard": "Standard-risk change",
             "high": f"High-risk change ({', '.join(risk['reasons'])})"}[cls]
     why = (str(m.get("reason") or "").strip().splitlines() or [""])[0][:300]
     return (f"**Merge confidence:** {conf}%; a human review is needed. {kind}."
@@ -454,7 +464,12 @@ def post(a):
         # a thread the developer answered or resolved is theirs to close; the bot never repeats it
         (new if t is None else answered if t["replies"] or t["resolved"] else carried).append(f)
     # open: everything new or still unanswered, plus a Blocking point answered only by its author
-    open_findings = new + carried + [f for f in answered if f["severity"] == "blocking" and f.get("accepted") is not True]
+    author = api("GET", f"/pullrequests/{a.pr}")["author"]["display_name"]
+
+    def accepted(f):  # a human other than the author resolved the thread, or the reviewer saw a reply accept it
+        t = prior_of(f)
+        return f.get("accepted") is True or bool(t and t.get("resolved_by") and t["resolved_by"] != author)
+    open_findings = new + carried + [f for f in answered if f["severity"] == "blocking" and not accepted(f)]
     merge = merge_line(rv, risk_class(diff_entries(a.pr)), open_findings, ci_state(a.pr, a.sha))
     inline = [f for f in new if f["severity"] in ("blocking", "should", "question") and f.get("path") and f.get("line")]
     rest = [f for f in new if f not in inline]

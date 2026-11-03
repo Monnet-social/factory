@@ -49,7 +49,7 @@ Write one JSON object to the output file (default `review.json` in the workspace
 | `source` | `llm` or `precheck:<check-id>` (kept pre-check findings, wording may be improved) |
 | `fixed_prior` | earlier `kind: finding` items from `pr/prior-review.json` that the PR head fixes completely, each with one line of evidence; their threads are resolved. Empty on a first review |
 | `merge` | `confidence` 0–100: your estimate that a human finds no blocking or should-fix problem this review missed (the poster caps it); `reason` one line; `flag_gated` and `flag_evidence` (`path:line`) only for a `ui-candidate` PR in `pr/risk.json` |
-| `accepted` | optional, on a kept `blocking` finding with `prior_id`: `true` when another human reviewer accepted the author's reply |
+| `accepted` | optional, on a kept `blocking` finding with `prior_id`: `true` when another human reviewer replied that the author's reply is accepted (a thread resolved by someone other than the author counts without it) |
 | `prior_id` | `id` of the earlier finding, summary or human comment (`kind: human`) in `pr/prior-review.json` that raised the same problem, else `null`. Findings with a `prior_id` are never posted again |
 
 `body` ≤ 6 lines, Markdown allowed, no headings. Findings ordered by severity, then file.

@@ -88,7 +88,8 @@ file is missing, continue without it and say so in `notes`.
    - Exception: a `blocking` finding answered only by its author, not fixed in the head and not
      accepted by another human reviewer in the thread, stays open. Keep it with `prior_id` set and
      name it in `summary` as an open Blocking point with its thread `id`. If another human reviewer
-     accepted it in the thread, set `"accepted": true` on the kept finding.
+     replied in the thread that the author's reply is accepted, set `"accepted": true` on the kept
+     finding. A thread resolved by someone other than the author counts as accepted without it.
    - The developer fixed it in part → report only the part that is still wrong, and only if their
      reply does not already explain why that part stays. That remaining part is a new finding
      without `prior_id`.
