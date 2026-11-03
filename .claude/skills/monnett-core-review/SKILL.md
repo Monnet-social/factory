@@ -28,14 +28,16 @@ file is missing, continue without it and say so in `summary`.
 
 ## Procedure
 
-1. **Rules.** Read `pr/REVIEW.md` first when it exists: it is the team's standard for scope,
-   severity, evidence, what to always check, what not to report and how many findings to keep. Where
-   the rubric or known-drift below disagrees with it, `pr/REVIEW.md` wins. Then read `core/CLAUDE.md`
+1. **Rules.** Read `pr/REVIEW.md` first: it is the team's standard for scope, severity, evidence,
+   what to always check, what not to report and how many findings to keep. `bb.py` always provides it
+   (target branch, else `develop`); if it is missing, say so in `summary`
+   and use the fallback severity and volume under "Rules for findings". Where the
+   references below disagree with it, `pr/REVIEW.md` wins. Then read `core/CLAUDE.md`
    (the rules as of this PR), the review sections of `core/.claude/skills/core-clean-code/SKILL.md`
    (§ 1, § 2, § 6) and `core/.claude/skills/core-architecture/SKILL.md` (§ 1 for a new cross-feature
    write or entity, § 3, § 5, § 7), [references/known-drift.md](references/known-drift.md) (where
    CLAUDE.md is stale and which legacy patterns not to report), and
-   [references/rubric.md](references/rubric.md) once fully.
+   [references/rubric.md](references/rubric.md) (detail and accepted examples per "Always check" item).
 2. **Intent.** Read `pr/meta.json`, `pr/jira.md`, `pr/files.txt`. Write down for yourself: what the PR
    claims to do, the AC list, which layers it touches, and every decision or follow-up ticket the
    description or ticket names (a named decision is not a defect). If the diff adds or edits an `spdd/` canvas,
@@ -43,7 +45,8 @@ file is missing, continue without it and say so in `summary`.
 3. **Read the change.** Go through `pr/diff.patch` file by file. For each non-trivial hunk open the
    surrounding code in `core/` and the callers/callees you need (Grep). Changed read paths: find every
    query and check the block/visibility filter. Changed writes: check the transaction boundaries.
-4. **Rubric pass.** Apply the rubric sections in order. Only for added/changed lines; a legacy
+4. **Checklist pass.** Go through "Always check" in `pr/REVIEW.md` in order, with the detail in
+   `rubric.md` under the same number. Only for added/changed lines; a legacy
    problem merely visible in context is out of scope unless the PR makes it worse or depends on it.
 5. **Test pass.** For every new or changed test ask: *would this test fail if the production change
    were reverted or broken?* Check assertions on order, totals, the actual returned items, and that
@@ -113,8 +116,8 @@ file is missing, continue without it and say so in `summary`.
 - At most 10 findings besides nits. If you have more, keep the most severe and give the number left
   out in `summary` ("2 more should-fix not shown"). On a later review, a finding the cap left out
   may be reported even in unchanged lines.
-- No finding about code the PR did not touch, about formatting, or about matters the rubric lists as
-  "do not report".
+- No finding about code the PR did not touch, about formatting, or about matters `pr/REVIEW.md` lists
+  under "Do not report".
 - **Do not self-censor.** Pre-existing code is in scope when the PR makes it matter more: it becomes
   the only source of a value, gains new callers, or the PR copies its pattern. A placeholder or
   hardcoded value the PR ships (`verified(false)`, a fixed time zone, a `default` branch) is a

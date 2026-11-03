@@ -5,7 +5,7 @@
   .claude/skills/<skill>/   copy of the target's skill
   core/ | app/              tree at the review-point head, no .git (no future history)
   core/ (app target)        monnett-core develop as of the review point, with --core <core clone>
-  pr/meta.json pr/diff.patch pr/files.txt pr/precheck.json pr/jira.md
+  pr/meta.json pr/diff.patch pr/files.txt pr/precheck.json pr/jira.md pr/REVIEW.md (--review-rev)
 
 Human comments are NOT copied into the workspace; the judge reads them from selection.json.
 Env for Jira: JIRA_EMAIL, JIRA_TOKEN.
@@ -40,7 +40,7 @@ def extract(repo, rev, dest):
     archive.wait()
 
 
-def build(x, repo, runs, t, core=None):
+def build(x, repo, runs, t, core=None, review_rev="origin/develop"):
     ws = os.path.join(runs, f"PR-{x['pr']}")
     if os.path.exists(ws):
         shutil.rmtree(ws)
@@ -62,6 +62,8 @@ def build(x, repo, runs, t, core=None):
     os.remove(om)
     if x.get("jira"):
         sh([sys.executable, "-I", JIRA, x["jira"], "--out", p("jira.md")])
+    # today's REVIEW.md, as bb.py would give it: a backtest measures the current rules on old PRs
+    open(p("REVIEW.md"), "w").write(sh(["git", "-C", repo, "show", f"{review_rev}:REVIEW.md"]))
     return ws
 
 
@@ -73,12 +75,13 @@ def main():
     ap.add_argument("--target", default="core", choices=sorted(TARGETS))
     ap.add_argument("--core", help="monnett-core clone, adds core/ (develop at the review point) to app workspaces")
     ap.add_argument("--only", default="")
+    ap.add_argument("--review-rev", default="origin/develop", help="revision whose REVIEW.md goes to pr/REVIEW.md")
     a = ap.parse_args()
     only = {int(i) for i in a.only.split(",") if i}
     for x in json.load(open(a.selection))["selected"]:
         if only and x["pr"] not in only:
             continue
-        ws = build(x, a.repo, a.runs, TARGETS[a.target], a.core)
+        ws = build(x, a.repo, a.runs, TARGETS[a.target], a.core, a.review_rev)
         n = len(json.load(open(os.path.join(ws, "pr", "precheck.json")))["findings"])
         print(f"PR-{x['pr']}: {x['src_lines']} src lines, {n} pre-check findings, jira={x.get('jira')}")
 

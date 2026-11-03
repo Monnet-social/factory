@@ -29,13 +29,15 @@ file is missing, continue without it and say so in `notes`.
 
 ## Procedure
 
-1. **Rules.** Read `pr/REVIEW.md` first when it exists: it is the team's standard for scope,
-   severity, evidence, what to always check, what not to report and how many findings to keep. Where
-   the rubric or known-drift below disagrees with it, `pr/REVIEW.md` wins. Then read `app/CLAUDE.md`
+1. **Rules.** Read `pr/REVIEW.md` first: it is the team's standard for scope, severity, evidence,
+   what to always check, what not to report and how many findings to keep. `bb.py` always provides it
+   (target branch, else `develop`); if it is missing, say so in `summary`
+   and use the fallback severity and volume under "Rules for findings". Where the
+   references below disagree with it, `pr/REVIEW.md` wins. Then read `app/CLAUDE.md`
    (the rules as of this PR) and
    [references/known-drift.md](references/known-drift.md) (where CLAUDE.md is stale, legitimate
    exceptions, legacy patterns not to report). Read [references/rubric.md](references/rubric.md)
-   once fully. When the PR touches `lib/l10n/`, also read `app/lib/l10n/README.md`.
+   (detail and accepted examples per "Always check" item). When the PR touches `lib/l10n/`, also read `app/lib/l10n/README.md`.
 2. **Intent.** Read `pr/meta.json`, `pr/jira.md`, `pr/files.txt`. Write down for yourself: what the PR
    claims to do, the AC list, which layers and screens it touches, and every behaviour change the
    diff makes that the description does not list.
@@ -60,7 +62,8 @@ file is missing, continue without it and say so in `notes`.
    `question`. Exceptions: when the description already holds the merge on a core PR ("merge after
    core #N"), report nothing; when it names a core PR branch you cannot see, ask a `question`. If
    `core/` is absent, say so in `notes` and raise contract doubts as `question`.
-5. **Rubric pass.** Apply the rubric sections in order. Only for added/changed lines; a legacy
+5. **Checklist pass.** Go through "Always check" in `pr/REVIEW.md` in order, with the detail in
+   `rubric.md` under the same number. Only for added/changed lines; a legacy
    problem merely visible in context is out of scope unless the PR makes it worse or depends on it.
 6. **Test pass.** For every new or changed test ask: *would this test fail if the production change
    were reverted or broken?* Check seeds that equal the default state, assertions on order and on the
@@ -140,7 +143,7 @@ file is missing, continue without it and say so in `notes`.
   out in `summary` ("2 more should-fix not shown"). On a later review, a finding the cap left out
   may be reported even in unchanged lines.
 - No finding about code the PR did not touch, about formatting, about analyzer infos CI does not gate
-  (unless they hide a real defect), or about matters the rubric lists as "do not report".
+  (unless they hide a real defect), or about matters `pr/REVIEW.md` lists under "Do not report".
 - Do not report what CI fails on by itself (`hardcoded_string` in widget arguments, every ARB guard
   rule, naming, analyzer errors, failing tests); `pr/precheck.json` lists such hits under `info`.
 - You cannot run the app, `flutter analyze` or the tests. Do not claim you did. When a finding depends
